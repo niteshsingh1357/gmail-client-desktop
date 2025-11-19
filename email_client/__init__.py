@@ -1,0 +1,2 @@
+"""Email client integration layer"""
+
