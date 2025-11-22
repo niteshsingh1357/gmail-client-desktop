@@ -114,7 +114,13 @@ class DatabaseManager:
     # Account operations
     def add_account(self, account: Account) -> int:
         """Add a new account and return account_id"""
+        # Check if account already exists
         cursor = self.conn.cursor()
+        cursor.execute("SELECT account_id FROM accounts WHERE email_address = ?", (account.email_address,))
+        existing = cursor.fetchone()
+        if existing:
+            raise ValueError(f"Account with email '{account.email_address}' already exists (ID: {existing['account_id']})")
+        
         cursor.execute("""
             INSERT INTO accounts (email_address, display_name, provider, auth_type,
                                 encrypted_token, imap_server, imap_port, smtp_server,
@@ -379,5 +385,22 @@ class DatabaseManager:
     def close(self):
         """Close database connection"""
         if self.conn:
-            self.conn.close()
+            try:
+                # Commit any pending changes
+                self.conn.commit()
+                # Close the connection
+                self.conn.close()
+            except sqlite3.Error:
+                pass  # Ignore errors on close
+            finally:
+                self.conn = None
+    
+    def __enter__(self):
+        """Context manager entry"""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit"""
+        self.close()
+        return False
 

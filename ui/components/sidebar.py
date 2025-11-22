@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QListWidget, QListWidgetItem,
                              QLabel, QPushButton, QHBoxLayout, QMenu)
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QIcon
-from database.models import Account, Folder
+from email_client.models import EmailAccount, Folder
 
 
 class Sidebar(QWidget):
@@ -249,14 +249,22 @@ class Sidebar(QWidget):
         for folder in folders:
             self.add_folder(folder)
     
-    def add_account(self, account: Account):
-        """Add an account to the sidebar"""
-        self.accounts[account.account_id] = account
+    def add_account(self, account):
+        """Add an account to the sidebar (supports both EmailAccount and old Account model)"""
+        # Handle both new EmailAccount and old Account models
+        if hasattr(account, 'id'):
+            account_id = account.id
+        elif hasattr(account, 'account_id'):
+            account_id = account.account_id
+        else:
+            return  # Invalid account object
+        
+        self.accounts[account_id] = account
         
         item = QListWidgetItem()
         display_text = account.display_name or account.email_address
         item.setText(f"👤 {display_text}")
-        item.setData(Qt.UserRole, account.account_id)
+        item.setData(Qt.UserRole, account_id)
         self.account_list.addItem(item)
     
     def clear_accounts(self):
@@ -264,8 +272,8 @@ class Sidebar(QWidget):
         self.account_list.clear()
         self.accounts.clear()
     
-    def set_accounts(self, accounts: list[Account]):
-        """Set accounts (replaces existing)"""
+    def set_accounts(self, accounts):
+        """Set accounts (replaces existing) - supports both EmailAccount and old Account model"""
         self.clear_accounts()
         for account in accounts:
             self.add_account(account)

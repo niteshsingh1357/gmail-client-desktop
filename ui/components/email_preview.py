@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdi
                              QPushButton, QScrollArea, QFrame)
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
-from database.models import Email, Attachment
+from email_client.models import EmailMessage, Attachment
 from utils.helpers import format_date, format_file_size
 from pathlib import Path
 
@@ -280,7 +280,7 @@ class EmailPreview(QWidget):
         self.setLayout(layout)
         self.show_empty_state()
     
-    def show_email(self, email: Email, attachments: list[Attachment] = None):
+    def show_email(self, email: EmailMessage, attachments: list[Attachment] = None):
         """Display an email"""
         self.current_email = email
         self.empty_label.setVisible(False)
@@ -292,15 +292,17 @@ class EmailPreview(QWidget):
         
         # Set header information
         self.subject_label.setText(email.subject or "(No Subject)")
-        self.from_label.setText(f"From: {email.sender_name or email.sender} <{email.sender}>")
-        self.to_label.setText(f"To: {email.recipients}")
-        self.date_label.setText(f"Date: {format_date(email.timestamp) if email.timestamp else 'Unknown'}")
+        self.from_label.setText(f"From: {email.sender}")
+        recipients_str = ", ".join(email.recipients) if email.recipients else ""
+        self.to_label.setText(f"To: {recipients_str}")
+        date_to_show = email.received_at or email.sent_at
+        self.date_label.setText(f"Date: {format_date(date_to_show) if date_to_show else 'Unknown'}")
         
         # Set body
         if email.body_html:
             self.body_text.setHtml(email.body_html)
-        elif email.body_text:
-            self.body_text.setPlainText(email.body_text)
+        elif email.body_plain:
+            self.body_text.setPlainText(email.body_plain)
         else:
             self.body_text.setPlainText("(No content)")
         
@@ -353,15 +355,15 @@ class EmailPreview(QWidget):
     def on_reply(self):
         """Handle reply button click"""
         if self.current_email:
-            self.reply_clicked.emit(self.current_email.email_id)
+            self.reply_clicked.emit(self.current_email.id)
     
     def on_forward(self):
         """Handle forward button click"""
         if self.current_email:
-            self.forward_clicked.emit(self.current_email.email_id)
+            self.forward_clicked.emit(self.current_email.id)
     
     def on_delete(self):
         """Handle delete button click"""
         if self.current_email:
-            self.delete_clicked.emit(self.current_email.email_id)
+            self.delete_clicked.emit(self.current_email.id)
 

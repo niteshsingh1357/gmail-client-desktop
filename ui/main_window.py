@@ -340,19 +340,19 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Ready")
     
     def load_accounts(self):
-        """Load accounts using controller"""
+        """Load accounts using the new database system"""
         accounts = self.account_controller.list_accounts()
         if accounts:
-            # Update sidebar (may need conversion from EmailAccount to old Account model)
-            # For now, we'll need to adapt or update sidebar to use new models
-            self.sidebar.set_accounts(accounts)  # Assuming sidebar can handle EmailAccount
+            # Update sidebar (now supports EmailAccount directly)
+            self.sidebar.set_accounts(accounts)
             # Update account filter dropdown
             self.account_filter.clear()
             self.account_filter.addItem("All Accounts")
             for account in accounts:
-                self.account_filter.addItem(account.display_name or account.email_address, account.id)
+                if account.id:
+                    self.account_filter.addItem(account.display_name or account.email_address, account.id)
             # Select first account
-            if accounts:
+            if accounts and accounts[0].id:
                 self.on_account_selected(accounts[0].id)
         else:
             # No accounts, show login dialog
@@ -372,21 +372,11 @@ class MainWindow(QMainWindow):
         """
         Handle new account addition.
         
-        Note: This method still uses the old database manager for account creation
-        as it integrates with OAuth2Handler. In a full refactor, this would be
-        moved to a controller or service layer.
+        This method now only handles OAuth2 authentication flow.
+        Non-OAuth accounts should use the OAuth flow or be added via the new system.
         """
-        # TODO: Refactor account creation to use new auth.accounts module
-        # For now, keeping old implementation for OAuth2 integration
         try:
-            # Import old modules for account creation (temporary)
-            from database.db_manager import DatabaseManager
-            from database.models import Account
             from email_client.oauth2_handler import OAuth2Handler
-            from encryption.crypto import get_encryption_manager
-            
-            db_manager = DatabaseManager()
-            encryption_manager = get_encryption_manager()
             
             # Handle OAuth2 authentication
             if account_data.get('use_oauth'):
@@ -402,24 +392,13 @@ class MainWindow(QMainWindow):
                             "1. Create a .env file in the project directory\n"
                             "2. Add GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET\n"
                             "3. Get credentials from: https://console.cloud.google.com/apis/credentials\n\n"
-                            "Would you like to use password authentication instead?",
-                            QMessageBox.Yes | QMessageBox.No
+                            "OAuth2 is required for Gmail.",
+                            QMessageBox.Ok
                         )
-                        if reply == QMessageBox.Yes:
-                            # Fall back to password authentication
-                            if not account_data.get('password'):
-                                QMessageBox.warning(
-                                    self,
-                                    "Password Required",
-                                    "Please enter your password or app-specific password in the login window."
-                                )
-                                return
-                            encrypted_token = encryption_manager.encrypt(account_data['password'])
-                        else:
-                            return
+                        return
                     else:
                         # Run OAuth in a separate thread to avoid blocking UI
-                        self._authenticate_oauth_async(provider, 'gmail', account_data, login_window, db_manager, encryption_manager)
+                        self._authenticate_oauth_async(provider, 'gmail', account_data, login_window, None, None)
                         return  # Exit early, will continue in callback
                 elif provider == 'outlook':
                     if not config.OUTLOOK_CLIENT_ID or not config.OUTLOOK_CLIENT_SECRET:
@@ -431,86 +410,19 @@ class MainWindow(QMainWindow):
                             "1. Create a .env file in the project directory\n"
                             "2. Add OUTLOOK_CLIENT_ID and OUTLOOK_CLIENT_SECRET\n"
                             "3. Get credentials from: https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade\n\n"
-                            "Would you like to use password authentication instead?",
-                            QMessageBox.Yes | QMessageBox.No
+                            "OAuth2 is required for Outlook.",
+                            QMessageBox.Ok
                         )
-                        if reply == QMessageBox.Yes:
-                            # Fall back to password authentication
-                            if not account_data.get('password'):
-                                QMessageBox.warning(
-                                    self,
-                                    "Password Required",
-                                    "Please enter your password or app-specific password in the login window."
-                                )
-                                return
-                            encrypted_token = encryption_manager.encrypt(account_data['password'])
-                        else:
-                            return
+                        return
                     else:
                         # Run OAuth in a separate thread to avoid blocking UI
-                        self._authenticate_oauth_async(provider, 'outlook', account_data, login_window, db_manager, encryption_manager)
+                        self._authenticate_oauth_async(provider, 'outlook', account_data, login_window, None, None)
                         return  # Exit early, will continue in callback
                 else:
-                    # Other providers don't support OAuth2, use password
-                    if not account_data.get('password'):
-                        QMessageBox.warning(self, "Password Required", "Please enter your password.")
-                        return
-                    encrypted_token = encryption_manager.encrypt(account_data['password'])
-            else:
-                # Password-based authentication
-                if not account_data.get('password'):
-                    QMessageBox.warning(self, "Password Required", "Please enter your password.")
+                    QMessageBox.warning(self, "OAuth2 Required", "OAuth2 is required for this provider.")
                     return
-                encrypted_token = encryption_manager.encrypt(account_data['password'])
-            
-            # Create account object (old model - TODO: convert to new EmailAccount)
-            account = Account(
-                email_address=account_data['email'],
-                display_name=account_data['display_name'],
-                provider=account_data['provider'],
-                auth_type='oauth2' if account_data.get('use_oauth') else 'password',
-                encrypted_token=encrypted_token,
-                imap_server=account_data['imap_server'],
-                imap_port=account_data['imap_port'],
-                smtp_server=account_data['smtp_server'],
-                smtp_port=account_data['smtp_port'],
-                use_tls=account_data['use_tls']
-            )
-            
-            # Add to database (old system)
-            account_id = db_manager.add_account(account)
-            account.account_id = account_id
-            
-            # Ensure transaction is committed before opening new connections
-            if db_manager.conn:
-                db_manager.conn.commit()
-            
-            # Add to sidebar
-            self.sidebar.add_account(account)
-            
-            # Sync folders (old system for now)
-            self.sync_account_folders(account, db_manager, encryption_manager)
-            
-            # Reload accounts using controller (this opens a new connection)
-            # Small delay to ensure previous transaction is fully committed
-            import time
-            time.sleep(0.1)
-            self.load_accounts()
-            
-            # Select the newly added account
-            if account_id:
-                self.on_account_selected(account_id)
-            
-            # Close login window if provided
-            if login_window:
-                login_window.accept()
-            
-            # Bring main window to front
-            self.show()
-            self.raise_()
-            self.activateWindow()
-            
-            QMessageBox.information(self, "Success", "Account added successfully!")
+            else:
+                QMessageBox.warning(self, "OAuth2 Required", "OAuth2 authentication is required. Please enable it in the login window.")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to add account: {str(e)}")
             # Re-enable login button on error
@@ -559,65 +471,26 @@ class MainWindow(QMainWindow):
             # Close login window IMMEDIATELY - before any other operations
             # This provides immediate feedback to the user
             if login_window:
-                # done() will exit the exec_() loop and close the modal dialog
-                login_window.done(QDialog.Accepted)
-                # Ensure it's actually closed
+                # Since we're called via signal, we're already on the main thread
+                # Call accept() directly to close the modal dialog
+                login_window.accept()  # This exits exec_() and closes the dialog
+                
+                # Process events immediately to ensure the window closes
+                QApplication.processEvents()
+                
+                # Also hide it explicitly as a backup
+                login_window.hide()
                 login_window.setVisible(False)
-            
-            # Process any pending events to ensure window closes
+                
+            # Process events one more time to ensure UI updates
             QApplication.processEvents()
             
-            # Encrypt token
-            encrypted_token = encryption_manager.encrypt(token_json)
-            
-            # Create account object
-            from database.models import Account
-            account = Account(
-                email_address=account_data['email'],
-                display_name=account_data['display_name'],
-                provider=account_data['provider'],
-                auth_type='oauth2',
-                encrypted_token=encrypted_token,
-                imap_server=account_data['imap_server'],
-                imap_port=account_data['imap_port'],
-                smtp_server=account_data['smtp_server'],
-                smtp_port=account_data['smtp_port'],
-                use_tls=account_data['use_tls']
-            )
-            
-            # Add to database
-            account_id = db_manager.add_account(account)
-            account.account_id = account_id
-            
-            # Ensure transaction is committed
-            if db_manager.conn:
-                db_manager.conn.commit()
-            
-            # Add to sidebar
-            self.sidebar.add_account(account)
-            
-            # Sync folders (this might take time, but window is already closed)
-            try:
-                self.sync_account_folders(account, db_manager, encryption_manager)
-            except Exception as sync_error:
-                print(f"Warning: Folder sync failed: {sync_error}")
-                # Continue anyway - account is added
-            
-            # Reload accounts
-            import time
-            time.sleep(0.1)
-            self.load_accounts()
-            
-            # Select the newly added account
-            if account_id:
-                self.on_account_selected(account_id)
-            
-            # Bring main window to front
-            self.show()
-            self.raise_()
-            self.activateWindow()
-            
-            QMessageBox.information(self, "Success", "Account added successfully!")
+            # Defer heavy operations using a timer so the dialog can close first
+            # This ensures the window closing happens immediately
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(100, lambda: self._complete_account_setup_after_oauth(
+                token_json, account_data, db_manager, encryption_manager
+            ))
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to add account: {str(e)}")
@@ -651,42 +524,81 @@ class MainWindow(QMainWindow):
             self.oauth_thread.deleteLater()
             self.oauth_thread = None
     
-    def sync_account_folders(self, account, db_manager, encryption_manager):
-        """Sync folders for an account (temporary - uses old system)"""
+    def _complete_account_setup_after_oauth(self, token_json: str, account_data: dict,
+                                            db_manager=None, encryption_manager=None):
+        """Complete account setup after OAuth success (called after dialog closes)"""
         try:
-            from email_client.imap_client import IMAPClient
+            # Parse token JSON to create TokenBundle
+            import json
+            from datetime import datetime, timedelta
+            from email_client.auth.oauth import TokenBundle
+            from email_client.auth.accounts import create_oauth_account
             
-            # Decrypt token
-            encrypted_token = account.encrypted_token
-            token = encryption_manager.decrypt(encrypted_token)
+            token_data = json.loads(token_json)
             
-            # Connect to IMAP
-            imap_client = IMAPClient(account.imap_server, account.imap_port, account.use_tls)
-            if not imap_client.connect(account.email_address, token):
-                return
+            # OAuth2Handler returns token in format: {'token': ..., 'refresh_token': ..., ...}
+            # Extract token information (handle both formats)
+            access_token = token_data.get('token') or token_data.get('access_token', '')
+            refresh_token = token_data.get('refresh_token')
             
-            # Get folders
-            folders = imap_client.list_folders()
-            imap_client.disconnect()
+            # Calculate expiration time
+            # OAuth2Handler doesn't provide expires_in, so we'll use a default
+            # or try to get it from the token data
+            expires_in = token_data.get('expires_in', 3600)  # Default to 1 hour
+            expires_at = datetime.now() + timedelta(seconds=expires_in)
             
-            # Save folders to database
-            for folder in folders:
-                folder.account_id = account.account_id
-                folder_id = db_manager.add_folder(folder)
-                folder.folder_id = folder_id
+            # Create TokenBundle
+            token_bundle = TokenBundle(
+                access_token=access_token,
+                refresh_token=refresh_token,
+                expires_at=expires_at
+            )
             
-            # Update sidebar
-            db_folders = db_manager.get_folders(account.account_id)
-            self.sidebar.set_folders(db_folders)
+            # Create account using new system
+            provider_name = account_data['provider'].lower()
+            profile_email = account_data['email']
+            display_name = account_data['display_name'] or profile_email.split('@')[0]
             
-            # Auto-select inbox if available and this is the current account
-            if self.current_account_id == account.account_id:
-                for folder in db_folders:
-                    if folder.folder_type == 'inbox':
-                        self.sidebar.select_folder(folder.folder_id)
-                        break
+            # Use the new account creation system
+            account = create_oauth_account(
+                provider_name=provider_name,
+                token_bundle=token_bundle,
+                profile_email=profile_email,
+                display_name=display_name
+            )
+            
+            # Reload accounts to refresh UI
+            self.load_accounts()
+            
+            # Select the newly added account
+            if account.id:
+                self.on_account_selected(account.id)
+            
+            # Sync folders in background (using new system)
+            try:
+                self._sync_account_folders_new(account)
+            except Exception as sync_error:
+                print(f"Warning: Folder sync failed: {sync_error}")
+                # Continue anyway - account is added
+            
+            # Bring main window to front
+            self.show()
+            self.raise_()
+            self.activateWindow()
+            
+            QMessageBox.information(self, "Success", "Account added successfully!")
         except Exception as e:
-            print(f"Error syncing folders: {e}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "Error", f"Failed to complete account setup: {str(e)}")
+        finally:
+            # Clean up old database manager if it exists
+            if db_manager:
+                try:
+                    db_manager.close()
+                except:
+                    pass
+    
     
     def on_account_selected(self, account_id: int):
         """Handle account selection"""
@@ -969,43 +881,50 @@ class MainWindow(QMainWindow):
         Note: This method still uses the old database manager for draft storage.
         In a full refactor, this would use the new cache repository.
         """
-        # TODO: Refactor draft saving to use new cache_repo
-        from database.models import Email, Attachment
-        from database.db_manager import DatabaseManager
-        
+        from email_client.models import EmailMessage, Attachment as AttachmentModel
+        from email_client.storage import cache_repo
+        from datetime import datetime
+            
         account_id = draft_data.get('account_id')
         if not account_id:
             QMessageBox.warning(self, "Error", "No account specified for draft.")
             return
         
         try:
-            db_manager = DatabaseManager()
             # If we're editing an existing draft, delete it first
             draft_email_id = draft_data.get('draft_email_id')
             if draft_email_id:
-                self.db_manager.delete_email(draft_email_id)
+                from email_client.storage import db
+                db.execute("DELETE FROM emails WHERE id = ?", (draft_email_id,))
             
             # Get or create drafts folder
-            drafts_folder = self.db_manager.get_folder_by_type(account_id, 'drafts')
+            folders = self.folder_controller.list_folders(account_id)
+            drafts_folder = None
+            for folder in folders:
+                if folder.is_system_folder and (folder.server_path.upper() == 'DRAFTS' or folder.name.upper() == 'DRAFTS'):
+                    drafts_folder = folder
+                    break
+            
             if not drafts_folder:
                 # Create drafts folder if it doesn't exist
-                account = self.db_manager.get_account(account_id)
+                from email_client.core.folder_manager import FolderManager
+                from email_client.network.imap_client import ImapClient
+                from email_client.auth.accounts import get_token_bundle, get_account
+                
+                account = get_account(account_id)
                 if not account:
                     QMessageBox.warning(self, "Error", "Account not found.")
                     return
                 
-                drafts_folder = Folder(
-                    account_id=account_id,
-                    name="Drafts",
-                    full_path="Drafts",
-                    folder_type="drafts",
-                    sync_enabled=True
-                )
-                drafts_folder.folder_id = self.db_manager.add_folder(drafts_folder)
+                token_bundle = get_token_bundle(account_id)
+                imap_client = ImapClient(account, token_bundle)
+                folder_manager = FolderManager(imap_client, cache_repo.upsert_folder)
+                
+                drafts_folder = folder_manager.create_folder("Drafts")
                 
                 # Update sidebar to show new drafts folder
                 if self.current_account_id == account_id:
-                    folders = self.db_manager.get_folders(account_id)
+                    folders = self.folder_controller.list_folders(account_id)
                     self.sidebar.set_folders(folders)
             
             # Create email object for draft
@@ -1017,17 +936,17 @@ class MainWindow(QMainWindow):
                     break
             
             recipients = draft_data.get('to', [])
-            if draft_data.get('cc'):
-                recipients.extend(draft_data.get('cc', []))
-            
-            from email_client.models import EmailMessage, Attachment as AttachmentModel
+            cc_recipients = draft_data.get('cc', [])
+            bcc_recipients = draft_data.get('bcc', [])
             
             draft_email = EmailMessage(
                 account_id=account_id,
-                folder_id=drafts_folder.folder_id,
+                folder_id=drafts_folder.id if drafts_folder else 0,
                 uid_on_server=0,  # Drafts don't have UID yet
                 sender=account.email_address if account else "",
                 recipients=recipients,
+                cc_recipients=cc_recipients,
+                bcc_recipients=bcc_recipients,
                 subject=draft_data.get('subject', '(No Subject)'),
                 body_plain=draft_data.get('body_text', ''),
                 body_html=draft_data.get('body_html', ''),
@@ -1069,36 +988,24 @@ class MainWindow(QMainWindow):
                             cache_repo.add_attachment(attachment)
             
             # Refresh drafts folder if it's currently selected
-            if self.current_folder_id == drafts_folder.folder_id:
-                emails = self.message_controller.list_messages(drafts_folder.folder_id, limit=100)
+            if drafts_folder and self.current_folder_id == drafts_folder.id:
+                emails = self.message_controller.list_messages(drafts_folder.id, limit=100)
                 self.email_list.set_emails(emails)
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error saving draft: {str(e)}")
     
     def handle_send_email(self, email_data: dict):
-        """
-        Handle sending an email.
-        
-        Note: This method still uses the old SMTP client for sending.
-        In a full refactor, this would use the new network.smtp_client.
-        """
-        # TODO: Refactor to use new SmtpClient from network.smtp_client
-        from email_client.smtp_client import SMTPClient as OldSMTPClient
-        from database.db_manager import DatabaseManager
-        from encryption.crypto import get_encryption_manager
+        """Handle sending an email using the new SmtpClient"""
+        from email_client.network.smtp_client import SmtpClient
+        from email_client.auth.accounts import get_token_bundle, get_account
+        from email_client.models import EmailMessage, Attachment
         
         if not self.current_account_id:
             QMessageBox.warning(self, "No Account", "No account selected. Please select an account first.")
             return
         
-        accounts = self.account_controller.list_accounts()
-        account = None
-        for acc in accounts:
-            if acc.id == self.current_account_id:
-                account = acc
-                break
-        
+        account = get_account(self.current_account_id)
         if not account:
             QMessageBox.warning(self, "No Account", "Account not found.")
             return
@@ -1110,60 +1017,52 @@ class MainWindow(QMainWindow):
                 from email_client.storage import db
                 db.execute("DELETE FROM emails WHERE id = ?", (draft_email_id,))
             
-            # For now, use old SMTP client (needs token decryption)
-            # TODO: Use new SmtpClient with TokenBundle
-            db_manager = DatabaseManager()
-            encryption_manager = get_encryption_manager()
+            # Get token bundle
+            token_bundle = get_token_bundle(self.current_account_id)
             
-            # Get account from old system for token decryption
-            old_account = db_manager.get_account(self.current_account_id)
-            if not old_account:
-                QMessageBox.warning(self, "No Account", "Account not found in database.")
-                return
+            # Create SMTP client
+            smtp_client = SmtpClient(account, token_bundle)
             
-            # Decrypt token/password
-            encrypted_token = old_account.encrypted_token
-            token = encryption_manager.decrypt(encrypted_token)
-            
-            # Connect to SMTP (old client)
-            smtp_client = OldSMTPClient(old_account.smtp_server, old_account.smtp_port, old_account.use_tls)
-            success, error_msg = smtp_client.connect(old_account.email_address, token)
-            if not success:
-                detailed_msg = f"Failed to connect to SMTP server ({old_account.smtp_server}:{old_account.smtp_port}).\n\n{error_msg}"
-                if old_account.provider == 'gmail':
-                    detailed_msg += "\n\nFor Gmail:\n"
-                    detailed_msg += "• Use port 587 with TLS, or port 465 with SSL\n"
-                    detailed_msg += "• Make sure you're using an App Password (not your regular password)\n"
-                    detailed_msg += "• Enable 2-Step Verification in your Google Account\n"
-                    detailed_msg += "• Generate App Password at: https://myaccount.google.com/apppasswords"
-                QMessageBox.critical(self, "Send Failed", detailed_msg)
-                return
-            
-            # Send email
-            success = smtp_client.send_email(
-                from_addr=account.email_address,
-                to_addrs=email_data['to'],
-                subject=email_data['subject'],
+            # Build EmailMessage
+            email_message = EmailMessage(
+                account_id=account.id,
+                sender=account.email_address,
+                recipients=email_data.get('to', []),
+                cc_recipients=email_data.get('cc', []),
+                bcc_recipients=email_data.get('bcc', []),
+                subject=email_data.get('subject', ''),
+                body_plain=email_data.get('body_text', ''),
                 body_html=email_data.get('body_html', ''),
-                body_text=email_data.get('body_text', ''),
-                cc_addrs=email_data.get('cc', []),
-                bcc_addrs=email_data.get('bcc', []),
-                attachments=email_data.get('attachments', [])
             )
             
-            smtp_client.disconnect()
+            # Build attachments list
+            attachments = []
+            if email_data.get('attachments'):
+                from pathlib import Path
+                for att_path in email_data['attachments']:
+                    path = Path(att_path)
+                    if path.exists():
+                        attachments.append(Attachment(
+                            filename=path.name,
+                            local_path=str(path),
+                            size_bytes=path.stat().st_size,
+                            mime_type="application/octet-stream"
+                        ))
             
-            if success:
-                QMessageBox.information(self, "Success", f"Email sent successfully from {account.email_address}!")
-                # Refresh current folder if it's drafts (to remove sent draft)
-                if self.current_folder_id:
-                    folder = self.db_manager.get_folder(self.current_folder_id)
-                    if folder and folder.folder_type == 'drafts':
-                        emails = self.db_manager.get_emails(self.current_folder_id, limit=100)
-                        self.email_list.set_emails(emails)
-            else:
-                QMessageBox.critical(self, "Send Failed", "Failed to send email.")
+            # Send email
+            smtp_client.send_email(email_message, attachments)
+            
+            QMessageBox.information(self, "Success", f"Email sent successfully from {account.email_address}!")
+            
+            # Refresh current folder if it's drafts (to remove sent draft)
+            if self.current_folder_id:
+                folder = self.folder_controller.get_folder(self.current_folder_id)
+                if folder and folder.is_system_folder and (folder.server_path.upper() == 'DRAFTS' or folder.name.upper() == 'DRAFTS'):
+                    emails = self.message_controller.list_messages(self.current_folder_id, limit=100)
+                    self.email_list.set_emails(emails)
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             QMessageBox.critical(self, "Error", f"Error sending email: {str(e)}")
     
     def on_refresh_clicked(self):

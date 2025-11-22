@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdi
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QTextCharFormat, QTextCursor
 from pathlib import Path
-from database.models import Email, Attachment
+from email_client.models import EmailMessage, Attachment
 from utils.helpers import validate_email
 
 
@@ -17,7 +17,7 @@ class ComposeWindow(QDialog):
     email_sent = pyqtSignal(dict)  # Signal with email data
     draft_saved = pyqtSignal(dict)  # Signal with draft data
     
-    def __init__(self, parent=None, reply_to: Email = None, forward_email: Email = None, draft_email: Email = None, account_id: int = None, account_email: str = None):
+    def __init__(self, parent=None, reply_to: EmailMessage = None, forward_email: EmailMessage = None, draft_email: EmailMessage = None, account_id: int = None, account_email: str = None):
         super().__init__(parent)
         if draft_email:
             self.setWindowTitle("Edit Draft")
@@ -268,8 +268,8 @@ class ComposeWindow(QDialog):
         }
         
         # If sending from a draft, include draft ID to delete it after sending
-        if self.draft_email and self.draft_email.email_id:
-            email_data['draft_email_id'] = self.draft_email.email_id
+        if self.draft_email and self.draft_email.id:
+            email_data['draft_email_id'] = self.draft_email.id
         
         self.email_sent.emit(email_data)
         self.accept()
@@ -300,8 +300,8 @@ class ComposeWindow(QDialog):
         }
         
         # If editing an existing draft, include its ID so it can be deleted
-        if self.draft_email and self.draft_email.email_id:
-            draft_data['draft_email_id'] = self.draft_email.email_id
+        if self.draft_email and self.draft_email.id:
+            draft_data['draft_email_id'] = self.draft_email.id
         
         # Emit signal to save draft
         self.draft_saved.emit(draft_data)

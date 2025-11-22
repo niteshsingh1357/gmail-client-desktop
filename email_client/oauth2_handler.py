@@ -8,9 +8,17 @@ import socketserver
 import urllib.parse
 from typing import Optional, Dict
 import requests
-from google_auth_oauthlib.flow import Flow
-from google.auth.transport.requests import Request
 import config
+
+# Lazy import for Google OAuth - only import when needed
+try:
+    from google_auth_oauthlib.flow import Flow
+    from google.auth.transport.requests import Request
+    GOOGLE_OAUTH_AVAILABLE = True
+except ImportError:
+    GOOGLE_OAUTH_AVAILABLE = False
+    Flow = None
+    Request = None
 
 
 class OAuth2Handler:
@@ -24,6 +32,12 @@ class OAuth2Handler:
     
     def authenticate_gmail(self) -> Optional[str]:
         """Authenticate with Gmail using OAuth2"""
+        if not GOOGLE_OAUTH_AVAILABLE:
+            raise ImportError(
+                "google-auth-oauthlib is not installed. "
+                "Please install it with: pip install google-auth-oauthlib"
+            )
+        
         if not config.GMAIL_CLIENT_ID or not config.GMAIL_CLIENT_SECRET:
             raise ValueError("Gmail OAuth2 credentials not configured")
         
@@ -52,6 +66,10 @@ class OAuth2Handler:
             # Start local server to receive callback
             self._start_callback_server()
             
+            # Give server a moment to be ready
+            import time
+            time.sleep(0.5)
+            
             # Open browser for authentication
             print(f"Opening browser for authentication: {auth_url}")
             webbrowser.open(auth_url)
@@ -70,8 +88,13 @@ class OAuth2Handler:
             
             # Exchange code for token
             try:
+                print(f"Exchanging authorization code for token...")
                 flow.fetch_token(code=self._code)
                 credentials = flow.credentials
+                
+                if not credentials or not credentials.token:
+                    print("Token exchange failed: No credentials returned")
+                    return None
                 
                 # Store token
                 self.token = {
@@ -86,7 +109,9 @@ class OAuth2Handler:
                 print("Gmail OAuth2 authentication successful")
                 return json.dumps(self.token)
             except Exception as e:
+                import traceback
                 print(f"Token exchange failed: {e}")
+                traceback.print_exc()
                 return None
                 
         except Exception as e:
@@ -117,6 +142,10 @@ class OAuth2Handler:
             
             # Start local server to receive callback
             self._start_callback_server()
+            
+            # Give server a moment to be ready
+            import time
+            time.sleep(0.5)
             
             # Open browser for authentication
             print(f"Opening browser for authentication: {auth_url}")
@@ -187,82 +216,110 @@ class OAuth2Handler:
                 pass
             
             def do_GET(self):
-                if '/callback' in self.path:
-                    try:
-                        # Parse query parameters
-                        parsed = urllib.parse.urlparse(self.path)
-                        params = urllib.parse.parse_qs(parsed.query)
+                # Only process /callback path
+                if '/callback' not in self.path:
+                    # Handle favicon and other requests
+                    if '/favicon.ico' in self.path:
+                        self.send_response(204)  # No content
+                        self.end_headers()
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+                    return
+                
+                try:
+                    # Parse query parameters
+                    parsed = urllib.parse.urlparse(self.path)
+                    params = urllib.parse.parse_qs(parsed.query)
+                    
+                    print(f"OAuth callback received: {self.path}")
+                    
+                    # Check for error in callback
+                    if 'error' in params:
+                        error = params['error'][0]
+                        error_description = params.get('error_description', [''])[0]
                         
-                        # Check for error in callback
-                        if 'error' in params:
-                            error = params['error'][0]
-                            error_description = params.get('error_description', [''])[0]
-                            
-                            # Handle user cancellation
-                            if error == 'access_denied':
-                                self.oauth_handler._error = "Authentication was cancelled by user."
-                            else:
-                                self.oauth_handler._error = f"OAuth error: {error}. {error_description}"
-                            
-                            # Send error response
-                            self.send_response(200)
-                            self.send_header('Content-type', 'text/html')
-                            self.end_headers()
-                            error_html = (
-                                b'<html><head><title>Authentication Failed</title></head><body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">'
-                                b'<h1 style="color: #d32f2f;">Authentication Failed</h1>'
-                                b'<p>You can close this window and try again.</p>'
-                                b'<script>setTimeout(function(){window.close();}, 3000);</script>'
-                                b'</body></html>'
-                            )
-                            self.wfile.write(error_html)
-                            return
+                        print(f"OAuth error in callback: {error} - {error_description}")
                         
-                        # Extract code
-                        if 'code' in params:
-                            self.oauth_handler._code = params['code'][0]
-                            # Send success response
-                            self.send_response(200)
-                            self.send_header('Content-type', 'text/html')
-                            self.end_headers()
-                            success_html = (
-                                b'<html><head><title>Authentication Successful</title></head><body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">'
-                                b'<h1 style="color: #4caf50;">Authentication Successful!</h1>'
-                                b'<p>You can close this window.</p>'
-                                b'<script>setTimeout(function(){window.close();}, 2000);</script>'
-                                b'</body></html>'
-                            )
-                            self.wfile.write(success_html)
+                        # Handle user cancellation
+                        if error == 'access_denied':
+                            self.oauth_handler._error = "Authentication was cancelled by user."
                         else:
-                            # No code, no error - might be a redirect issue
-                            self.send_response(200)
-                            self.send_header('Content-type', 'text/html')
-                            self.end_headers()
-                            self.wfile.write(
-                                b'<html><head><title>Waiting</title></head><body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">'
-                                b'<h1>Waiting for authentication...</h1></body></html>'
-                            )
-                    except Exception as e:
-                        self.oauth_handler._error = f"Error processing callback: {str(e)}"
-                        self.send_response(500)
+                            self.oauth_handler._error = f"OAuth error: {error}. {error_description}"
+                        
+                        # Send error response
+                        self.send_response(200)
+                        self.send_header('Content-type', 'text/html')
+                        self.end_headers()
+                        error_html = (
+                            b'<html><head><title>Authentication Failed</title></head><body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">'
+                            b'<h1 style="color: #d32f2f;">Authentication Failed</h1>'
+                            b'<p>You can close this window and try again.</p>'
+                            b'<script>setTimeout(function(){window.close();}, 3000);</script>'
+                            b'</body></html>'
+                        )
+                        self.wfile.write(error_html)
+                        self.wfile.flush()
+                        return
+                    
+                    # Extract code
+                    if 'code' in params:
+                        code = params['code'][0]
+                        print(f"OAuth code received: {code[:20]}...")
+                        self.oauth_handler._code = code
+                        
+                        # Send success response
+                        self.send_response(200)
+                        self.send_header('Content-type', 'text/html')
+                        self.end_headers()
+                        success_html = (
+                            b'<html><head><title>Authentication Successful</title></head><body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">'
+                            b'<h1 style="color: #4caf50;">Authentication Successful!</h1>'
+                            b'<p>You can close this window.</p>'
+                            b'<script>setTimeout(function(){window.close();}, 2000);</script>'
+                            b'</body></html>'
+                        )
+                        self.wfile.write(success_html)
+                        self.wfile.flush()
+                        print("Success response sent to browser")
+                    else:
+                        # No code, no error - might be a redirect issue
+                        print("Callback received but no code or error found")
+                        self.send_response(200)
                         self.send_header('Content-type', 'text/html')
                         self.end_headers()
                         self.wfile.write(
-                            b'<html><head><title>Error</title></head><body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">'
-                            b'<h1 style="color: #d32f2f;">Error</h1><p>An error occurred. Please try again.</p></body></html>'
+                            b'<html><head><title>Waiting</title></head><body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">'
+                            b'<h1>Waiting for authentication...</h1></body></html>'
                         )
-                else:
-                    self.send_response(404)
+                        self.wfile.flush()
+                except Exception as e:
+                    print(f"Error processing callback: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.oauth_handler._error = f"Error processing callback: {str(e)}"
+                    self.send_response(500)
+                    self.send_header('Content-type', 'text/html')
                     self.end_headers()
+                    self.wfile.write(
+                        b'<html><head><title>Error</title></head><body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">'
+                        b'<h1 style="color: #d32f2f;">Error</h1><p>An error occurred. Please try again.</p></body></html>'
+                    )
+                    self.wfile.flush()
         
         # Initialize error tracking
         self._error = None
         
         handler = lambda *args, **kwargs: CallbackHandler(*args, oauth_handler=self, **kwargs)
         try:
-            self._server = socketserver.TCPServer(("", config.OAUTH_REDIRECT_PORT), handler)
-            self._server.timeout = 1
-            self._server.allow_reuse_address = True
+            # Use ThreadingMixIn for better request handling
+            class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+                allow_reuse_address = True
+                daemon_threads = True
+            
+            self._server = ThreadedTCPServer(("", config.OAUTH_REDIRECT_PORT), handler)
+            self._server.timeout = 0.5
+            print(f"Callback server started on port {config.OAUTH_REDIRECT_PORT}")
         except OSError as e:
             if "Address already in use" in str(e):
                 raise RuntimeError(f"Port {config.OAUTH_REDIRECT_PORT} is already in use. Please close any other applications using this port.")
@@ -273,6 +330,8 @@ class OAuth2Handler:
         import time
         start_time = time.time()
         
+        print(f"Waiting for OAuth callback (timeout: {timeout}s)...")
+        
         while (time.time() - start_time) < timeout:
             # Check for error first (user cancellation, etc.)
             if hasattr(self, '_error') and self._error:
@@ -281,14 +340,16 @@ class OAuth2Handler:
             
             # Check if we got the code
             if self._code:
+                print(f"OAuth callback received successfully")
                 return True
             
             # Handle one request (non-blocking with timeout)
+            # With ThreadingMixIn, each request is handled in its own thread
             try:
                 self._server.handle_request()
             except Exception as e:
                 # Log but continue - might be connection issues
-                if "timed out" not in str(e).lower():
+                if "timed out" not in str(e).lower() and "Address already in use" not in str(e):
                     print(f"Error handling callback request: {e}")
             
             # Small sleep to prevent CPU spinning
@@ -298,6 +359,7 @@ class OAuth2Handler:
         if not self._code:
             if not hasattr(self, '_error') or not self._error:
                 self._error = "Authentication timeout. Please try again."
+            print("OAuth callback timeout")
             return False
         
         return True

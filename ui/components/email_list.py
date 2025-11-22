@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QTableWidget, QTableWidgetIte
                              QLabel)
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
-from database.models import Email
+from email_client.models import EmailMessage
 from utils.helpers import format_date, truncate_text
 
 
@@ -163,14 +163,14 @@ class EmailList(QWidget):
         layout.addWidget(self.email_table)
         self.setLayout(layout)
     
-    def set_emails(self, emails: list[Email]):
+    def set_emails(self, emails: list[EmailMessage]):
         """Set emails to display"""
-        self.emails = {email.email_id: email for email in emails}
+        self.emails = {email.id: email for email in emails}
         self.update_table()
     
-    def add_email(self, email: Email):
+    def add_email(self, email: EmailMessage):
         """Add a single email to the list"""
-        self.emails[email.email_id] = email
+        self.emails[email.id] = email
         self.update_table()
     
     def clear_emails(self):
@@ -196,14 +196,14 @@ class EmailList(QWidget):
         if search_text:
             filtered_emails = [
                 e for e in filtered_emails
-                if search_text in e.subject.lower() or
-                   search_text in e.sender.lower() or
-                   search_text in e.sender_name.lower() or
-                   search_text in e.body_text.lower()
+                if search_text in (e.subject or "").lower() or
+                   search_text in (e.sender or "").lower() or
+                   search_text in (e.preview_text or "").lower() or
+                   search_text in (e.body_plain or "").lower()
             ]
         
-        # Sort by timestamp (most recent first)
-        filtered_emails.sort(key=lambda x: x.timestamp or datetime.min, reverse=True)
+        # Sort by received_at (most recent first)
+        filtered_emails.sort(key=lambda x: x.received_at or datetime.min, reverse=True)
         
         # Populate table
         for email in filtered_emails:
@@ -211,9 +211,9 @@ class EmailList(QWidget):
             self.email_table.insertRow(row)
             
             # Sender
-            sender_text = email.sender_name or email.sender
+            sender_text = email.sender or ""
             sender_item = QTableWidgetItem(truncate_text(sender_text, 30))
-            sender_item.setData(Qt.UserRole, email.email_id)
+            sender_item.setData(Qt.UserRole, email.id)
             if not email.is_read:
                 font = QFont()
                 font.setBold(True)
@@ -222,7 +222,7 @@ class EmailList(QWidget):
             
             # Subject
             subject_item = QTableWidgetItem(truncate_text(email.subject or "(No Subject)", 60))
-            subject_item.setData(Qt.UserRole, email.email_id)
+            subject_item.setData(Qt.UserRole, email.id)
             if not email.is_read:
                 font = QFont()
                 font.setBold(True)
@@ -230,9 +230,9 @@ class EmailList(QWidget):
             self.email_table.setItem(row, 1, subject_item)
             
             # Date
-            date_text = format_date(email.timestamp) if email.timestamp else ""
+            date_text = format_date(email.received_at) if email.received_at else ""
             date_item = QTableWidgetItem(date_text)
-            date_item.setData(Qt.UserRole, email.email_id)
+            date_item.setData(Qt.UserRole, email.id)
             self.email_table.setItem(row, 2, date_item)
             
             # Status
@@ -240,7 +240,7 @@ class EmailList(QWidget):
             if not email.is_read:
                 status_text = "● " + status_text
             status_item = QTableWidgetItem(status_text)
-            status_item.setData(Qt.UserRole, email.email_id)
+            status_item.setData(Qt.UserRole, email.id)
             status_item.setTextAlignment(Qt.AlignCenter)
             self.email_table.setItem(row, 3, status_item)
     
@@ -252,9 +252,9 @@ class EmailList(QWidget):
     
     def on_email_double_clicked(self, item: QTableWidgetItem):
         """Handle email double-click"""
-        email_id = item.data(Qt.UserRole)
-        if email_id:
-            self.email_selected.emit(email_id)
+        message_id = item.data(Qt.UserRole)
+        if message_id:
+            self.email_selected.emit(message_id)
     
     def on_search_changed(self, text: str):
         """Handle search text change"""
