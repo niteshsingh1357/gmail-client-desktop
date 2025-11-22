@@ -27,6 +27,9 @@ class OAuth2Handler:
         if not config.GMAIL_CLIENT_ID or not config.GMAIL_CLIENT_SECRET:
             raise ValueError("Gmail OAuth2 credentials not configured")
         
+        self._code = None
+        self._error = None
+        
         try:
             # Create OAuth flow
             flow = Flow.from_client_config(
@@ -50,39 +53,56 @@ class OAuth2Handler:
             self._start_callback_server()
             
             # Open browser for authentication
+            print(f"Opening browser for authentication: {auth_url}")
             webbrowser.open(auth_url)
             
-            # Wait for callback
-            self._wait_for_callback()
+            # Wait for callback (with timeout)
+            callback_received = self._wait_for_callback(timeout=300)  # 5 minute timeout
             
-            if not self._code:
+            # Check for errors
+            if self._error:
+                print(f"OAuth error: {self._error}")
+                return None
+            
+            if not callback_received or not self._code:
+                print("OAuth callback timeout or cancelled")
                 return None
             
             # Exchange code for token
-            flow.fetch_token(code=self._code)
-            credentials = flow.credentials
-            
-            # Store token
-            self.token = {
-                'token': credentials.token,
-                'refresh_token': credentials.refresh_token,
-                'token_uri': credentials.token_uri,
-                'client_id': credentials.client_id,
-                'client_secret': credentials.client_secret,
-                'scopes': credentials.scopes
-            }
-            
-            return json.dumps(self.token)
+            try:
+                flow.fetch_token(code=self._code)
+                credentials = flow.credentials
+                
+                # Store token
+                self.token = {
+                    'token': credentials.token,
+                    'refresh_token': credentials.refresh_token,
+                    'token_uri': credentials.token_uri,
+                    'client_id': credentials.client_id,
+                    'client_secret': credentials.client_secret,
+                    'scopes': credentials.scopes
+                }
+                
+                print("Gmail OAuth2 authentication successful")
+                return json.dumps(self.token)
+            except Exception as e:
+                print(f"Token exchange failed: {e}")
+                return None
+                
         except Exception as e:
             print(f"Gmail OAuth2 error: {e}")
             return None
         finally:
+            # Always stop the callback server
             self._stop_callback_server()
     
     def authenticate_outlook(self) -> Optional[str]:
         """Authenticate with Outlook using OAuth2"""
         if not config.OUTLOOK_CLIENT_ID or not config.OUTLOOK_CLIENT_SECRET:
             raise ValueError("Outlook OAuth2 credentials not configured")
+        
+        self._code = None
+        self._error = None
         
         try:
             # Build authorization URL
@@ -99,12 +119,19 @@ class OAuth2Handler:
             self._start_callback_server()
             
             # Open browser for authentication
+            print(f"Opening browser for authentication: {auth_url}")
             webbrowser.open(auth_url)
             
-            # Wait for callback
-            self._wait_for_callback()
+            # Wait for callback (with timeout)
+            callback_received = self._wait_for_callback(timeout=300)  # 5 minute timeout
             
-            if not self._code:
+            # Check for errors
+            if self._error:
+                print(f"OAuth error: {self._error}")
+                return None
+            
+            if not callback_received or not self._code:
+                print("OAuth callback timeout or cancelled")
                 return None
             
             # Exchange code for token
@@ -118,23 +145,34 @@ class OAuth2Handler:
                 'scope': ' '.join(config.OUTLOOK_SCOPES)
             }
             
-            response = requests.post(token_url, data=token_data)
-            if response.status_code == 200:
-                token_response = response.json()
-                self.token = {
-                    'access_token': token_response.get('access_token'),
-                    'refresh_token': token_response.get('refresh_token'),
-                    'token_type': token_response.get('token_type'),
-                    'expires_in': token_response.get('expires_in')
-                }
-                return json.dumps(self.token)
-            else:
-                print(f"Outlook token exchange failed: {response.text}")
+            try:
+                response = requests.post(token_url, data=token_data, timeout=30)
+                if response.status_code == 200:
+                    token_response = response.json()
+                    self.token = {
+                        'access_token': token_response.get('access_token'),
+                        'refresh_token': token_response.get('refresh_token'),
+                        'token_type': token_response.get('token_type'),
+                        'expires_in': token_response.get('expires_in')
+                    }
+                    print("Outlook OAuth2 authentication successful")
+                    return json.dumps(self.token)
+                else:
+                    error_msg = response.text
+                    print(f"Outlook token exchange failed: {error_msg}")
+                    return None
+            except requests.exceptions.Timeout:
+                print("Token exchange request timed out")
                 return None
+            except Exception as e:
+                print(f"Token exchange error: {e}")
+                return None
+                
         except Exception as e:
             print(f"Outlook OAuth2 error: {e}")
             return None
         finally:
+            # Always stop the callback server
             self._stop_callback_server()
     
     def _start_callback_server(self):
@@ -144,47 +182,139 @@ class OAuth2Handler:
                 self.oauth_handler = oauth_handler
                 super().__init__(*args, **kwargs)
             
+            def log_message(self, format, *args):
+                """Suppress default logging"""
+                pass
+            
             def do_GET(self):
                 if '/callback' in self.path:
-                    # Parse query parameters
-                    parsed = urllib.parse.urlparse(self.path)
-                    params = urllib.parse.parse_qs(parsed.query)
-                    
-                    # Extract code
-                    if 'code' in params:
-                        self.oauth_handler._code = params['code'][0]
-                    
-                    # Send response
-                    self.send_response(200)
-                    self.send_header('Content-type', 'text/html')
-                    self.end_headers()
-                    self.wfile.write(b'<html><body><h1>Authentication successful!</h1><p>You can close this window.</p></body></html>')
+                    try:
+                        # Parse query parameters
+                        parsed = urllib.parse.urlparse(self.path)
+                        params = urllib.parse.parse_qs(parsed.query)
+                        
+                        # Check for error in callback
+                        if 'error' in params:
+                            error = params['error'][0]
+                            error_description = params.get('error_description', [''])[0]
+                            
+                            # Handle user cancellation
+                            if error == 'access_denied':
+                                self.oauth_handler._error = "Authentication was cancelled by user."
+                            else:
+                                self.oauth_handler._error = f"OAuth error: {error}. {error_description}"
+                            
+                            # Send error response
+                            self.send_response(200)
+                            self.send_header('Content-type', 'text/html')
+                            self.end_headers()
+                            error_html = (
+                                b'<html><head><title>Authentication Failed</title></head><body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">'
+                                b'<h1 style="color: #d32f2f;">Authentication Failed</h1>'
+                                b'<p>You can close this window and try again.</p>'
+                                b'<script>setTimeout(function(){window.close();}, 3000);</script>'
+                                b'</body></html>'
+                            )
+                            self.wfile.write(error_html)
+                            return
+                        
+                        # Extract code
+                        if 'code' in params:
+                            self.oauth_handler._code = params['code'][0]
+                            # Send success response
+                            self.send_response(200)
+                            self.send_header('Content-type', 'text/html')
+                            self.end_headers()
+                            success_html = (
+                                b'<html><head><title>Authentication Successful</title></head><body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">'
+                                b'<h1 style="color: #4caf50;">Authentication Successful!</h1>'
+                                b'<p>You can close this window.</p>'
+                                b'<script>setTimeout(function(){window.close();}, 2000);</script>'
+                                b'</body></html>'
+                            )
+                            self.wfile.write(success_html)
+                        else:
+                            # No code, no error - might be a redirect issue
+                            self.send_response(200)
+                            self.send_header('Content-type', 'text/html')
+                            self.end_headers()
+                            self.wfile.write(
+                                b'<html><head><title>Waiting</title></head><body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">'
+                                b'<h1>Waiting for authentication...</h1></body></html>'
+                            )
+                    except Exception as e:
+                        self.oauth_handler._error = f"Error processing callback: {str(e)}"
+                        self.send_response(500)
+                        self.send_header('Content-type', 'text/html')
+                        self.end_headers()
+                        self.wfile.write(
+                            b'<html><head><title>Error</title></head><body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">'
+                            b'<h1 style="color: #d32f2f;">Error</h1><p>An error occurred. Please try again.</p></body></html>'
+                        )
                 else:
                     self.send_response(404)
                     self.end_headers()
         
+        # Initialize error tracking
+        self._error = None
+        
         handler = lambda *args, **kwargs: CallbackHandler(*args, oauth_handler=self, **kwargs)
-        self._server = socketserver.TCPServer(("", config.OAUTH_REDIRECT_PORT), handler)
-        self._server.timeout = 1
+        try:
+            self._server = socketserver.TCPServer(("", config.OAUTH_REDIRECT_PORT), handler)
+            self._server.timeout = 1
+            self._server.allow_reuse_address = True
+        except OSError as e:
+            if "Address already in use" in str(e):
+                raise RuntimeError(f"Port {config.OAUTH_REDIRECT_PORT} is already in use. Please close any other applications using this port.")
+            raise
     
     def _wait_for_callback(self, timeout: int = 300):
-        """Wait for OAuth callback"""
+        """Wait for OAuth callback with proper timeout and error handling"""
         import time
         start_time = time.time()
-        while not self._code and (time.time() - start_time) < timeout:
-            self._server.handle_request()
+        
+        while (time.time() - start_time) < timeout:
+            # Check for error first (user cancellation, etc.)
+            if hasattr(self, '_error') and self._error:
+                print(f"OAuth error received: {self._error}")
+                return False
+            
+            # Check if we got the code
             if self._code:
-                break
+                return True
+            
+            # Handle one request (non-blocking with timeout)
+            try:
+                self._server.handle_request()
+            except Exception as e:
+                # Log but continue - might be connection issues
+                if "timed out" not in str(e).lower():
+                    print(f"Error handling callback request: {e}")
+            
+            # Small sleep to prevent CPU spinning
+            time.sleep(0.1)
+        
+        # Timeout reached
+        if not self._code:
+            if not hasattr(self, '_error') or not self._error:
+                self._error = "Authentication timeout. Please try again."
+            return False
+        
+        return True
     
     def _stop_callback_server(self):
-        """Stop the callback server"""
+        """Stop the callback server gracefully"""
         if self._server:
             try:
+                # Shutdown the server
                 self._server.shutdown()
+                # Close the server socket
                 self._server.server_close()
-            except:
-                pass
-            self._server = None
+                print("Callback server stopped")
+            except Exception as e:
+                print(f"Error stopping callback server: {e}")
+            finally:
+                self._server = None
     
     def get_access_token(self) -> Optional[str]:
         """Get current access token"""

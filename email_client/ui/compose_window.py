@@ -1,36 +1,78 @@
 """
-Email composition window
+Email composition window.
+
+This module provides a compose window for creating and sending emails
+using the MessageSender interface.
 """
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-                             QTextEdit, QPushButton, QListWidget, QListWidgetItem,
-                             QFileDialog, QMessageBox, QSplitter)
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, List
+from PyQt5.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QTextEdit, QPushButton, QListWidget, QListWidgetItem,
+    QFileDialog, QMessageBox, QComboBox
+)
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QTextCharFormat, QTextCursor
-from pathlib import Path
-from database.models import Email, Attachment
+from email_client.models import EmailAccount, EmailMessage, Attachment
+from email_client.ui.message_sender import MessageSender
+from email_client.network.smtp_client import SmtpError
 from utils.helpers import validate_email
 
 
 class ComposeWindow(QDialog):
-    """Email composition dialog"""
+    """
+    Email composition dialog.
     
-    email_sent = pyqtSignal(dict)  # Signal with email data
-    draft_saved = pyqtSignal(dict)  # Signal with draft data
+    Uses MessageSender interface to send emails, keeping SMTP logic
+    out of the UI layer.
+    """
     
-    def __init__(self, parent=None, reply_to: Email = None, forward_email: Email = None, draft_email: Email = None, account_id: int = None, account_email: str = None):
+    draft_saved = pyqtSignal(dict)  # Signal with draft data (for backward compatibility)
+    
+    def __init__(
+        self,
+        parent=None,
+        reply_to: Optional[EmailMessage] = None,
+        forward_email: Optional[EmailMessage] = None,
+        draft_email: Optional[EmailMessage] = None,
+        accounts: Optional[List[EmailAccount]] = None,
+        default_account: Optional[EmailAccount] = None,
+        message_sender: Optional[MessageSender] = None
+    ):
+        """
+        Initialize the compose window.
+        
+        Args:
+            parent: Parent widget.
+            reply_to: Email message to reply to.
+            forward_email: Email message to forward.
+            draft_email: Draft email to edit.
+            accounts: List of available accounts for the From selector.
+            default_account: Default account to select.
+            message_sender: MessageSender implementation (injected dependency).
+        """
         super().__init__(parent)
         if draft_email:
             self.setWindowTitle("Edit Draft")
+        elif reply_to:
+            self.setWindowTitle("Reply")
+        elif forward_email:
+            self.setWindowTitle("Forward")
         else:
             self.setWindowTitle("Compose Email")
+        
         self.setMinimumWidth(800)
         self.setMinimumHeight(600)
-        self.attachments = []  # List of file paths
+        
+        self.attachments: List[Path] = []  # List of file paths
         self.reply_to = reply_to
         self.forward_email = forward_email
         self.draft_email = draft_email
-        self.account_id = account_id
-        self.account_email = account_email
+        self.accounts = accounts or []
+        self.default_account = default_account
+        self.message_sender = message_sender
+        
         self.setup_ui()
         self.setup_reply_forward()
         self.setup_draft()
@@ -39,11 +81,25 @@ class ComposeWindow(QDialog):
         """Setup the UI"""
         layout = QVBoxLayout()
         
-        # Account info (which account is sending)
-        if self.account_email:
-            account_label = QLabel(f"From: {self.account_email}")
-            account_label.setStyleSheet("color: #666; font-weight: bold; padding: 5px;")
-            layout.addWidget(account_label)
+        # From (account selector)
+        from_layout = QHBoxLayout()
+        from_layout.addWidget(QLabel("From:"))
+        self.from_combo = QComboBox()
+        for account in self.accounts:
+            display_text = f"{account.display_name} <{account.email_address}>" if account.display_name else account.email_address
+            self.from_combo.addItem(display_text, account)
+        
+        # Select default account
+        if self.default_account:
+            for i in range(self.from_combo.count()):
+                if self.from_combo.itemData(i) == self.default_account:
+                    self.from_combo.setCurrentIndex(i)
+                    break
+        elif self.accounts:
+            self.from_combo.setCurrentIndex(0)
+        
+        from_layout.addWidget(self.from_combo)
+        layout.addLayout(from_layout)
         
         # To, CC, BCC fields
         form_layout = QVBoxLayout()
@@ -107,7 +163,7 @@ class ComposeWindow(QDialog):
         
         layout.addLayout(toolbar_layout)
         
-        # Body editor
+        # Body editor (rich text)
         self.body_editor = QTextEdit()
         self.body_editor.setAcceptRichText(True)
         layout.addWidget(self.body_editor)
@@ -150,35 +206,37 @@ class ComposeWindow(QDialog):
             self.subject_input.setText(subject)
             
             # Add quoted original message
+            date_str = self.reply_to.received_at.strftime("%Y-%m-%d %H:%M") if self.reply_to.received_at else "Unknown date"
             original_text = f"\n\n--- Original Message ---\n"
             original_text += f"From: {self.reply_to.sender}\n"
-            original_text += f"Date: {self.reply_to.timestamp}\n"
+            original_text += f"Date: {date_str}\n"
             original_text += f"Subject: {self.reply_to.subject}\n\n"
-            original_text += self.reply_to.body_text or self.reply_to.body_html
+            original_text += self.reply_to.body_plain or self.reply_to.body_html or ""
             self.body_editor.setPlainText(original_text)
         
         elif self.forward_email:
             # Forward
             subject = self.forward_email.subject or ""
-            if not subject.startswith("Fwd: "):
+            if not subject.startswith("Fwd: ") and not subject.startswith("Fw: "):
                 subject = f"Fwd: {subject}"
             self.subject_input.setText(subject)
             
             # Add forwarded message
+            date_str = self.forward_email.received_at.strftime("%Y-%m-%d %H:%M") if self.forward_email.received_at else "Unknown date"
             forwarded_text = f"\n\n--- Forwarded Message ---\n"
             forwarded_text += f"From: {self.forward_email.sender}\n"
-            forwarded_text += f"Date: {self.forward_email.timestamp}\n"
+            forwarded_text += f"Date: {date_str}\n"
             forwarded_text += f"Subject: {self.forward_email.subject}\n\n"
-            forwarded_text += self.forward_email.body_text or self.forward_email.body_html
+            forwarded_text += self.forward_email.body_plain or self.forward_email.body_html or ""
             self.body_editor.setPlainText(forwarded_text)
     
     def setup_draft(self):
         """Setup draft email fields"""
         if self.draft_email:
             # Load draft content into compose window
-            # Parse recipients (could be in "To" or "recipients" field)
-            recipients = self.draft_email.recipients or ""
-            self.to_input.setText(recipients)
+            # Parse recipients
+            recipients_str = ', '.join(self.draft_email.recipients) if self.draft_email.recipients else ""
+            self.to_input.setText(recipients_str)
             
             # Set subject
             subject = self.draft_email.subject or ""
@@ -189,15 +247,14 @@ class ComposeWindow(QDialog):
             # Set body content (prefer HTML if available)
             if self.draft_email.body_html:
                 self.body_editor.setHtml(self.draft_email.body_html)
-            elif self.draft_email.body_text:
-                self.body_editor.setPlainText(self.draft_email.body_text)
+            elif self.draft_email.body_plain:
+                self.body_editor.setPlainText(self.draft_email.body_plain)
     
-    def load_attachments(self, attachments: list[Attachment]):
+    def load_attachments(self, attachments: List[Attachment]):
         """Load attachments from a draft email"""
-        from pathlib import Path
         for attachment in attachments:
-            file_path = Path(attachment.file_path)
-            if file_path.exists():
+            if attachment.local_path and Path(attachment.local_path).exists():
+                file_path = Path(attachment.local_path)
                 self.attachments.append(file_path)
                 item = QListWidgetItem(attachment.filename)
                 item.setData(Qt.UserRole, str(file_path))
@@ -231,13 +288,62 @@ class ComposeWindow(QDialog):
         """Attach a file"""
         file_path, _ = QFileDialog.getOpenFileName(self, "Select File to Attach")
         if file_path:
-            self.attachments.append(Path(file_path))
-            item = QListWidgetItem(Path(file_path).name)
+            file_path_obj = Path(file_path)
+            self.attachments.append(file_path_obj)
+            item = QListWidgetItem(file_path_obj.name)
             item.setData(Qt.UserRole, file_path)
             self.attachments_list.addItem(item)
     
+    def _get_selected_account(self) -> Optional[EmailAccount]:
+        """Get the currently selected account."""
+        current_data = self.from_combo.currentData()
+        if current_data:
+            return current_data
+        return self.default_account or (self.accounts[0] if self.accounts else None)
+    
+    def _build_email_message(self) -> EmailMessage:
+        """Build EmailMessage model from UI fields."""
+        # Get recipients (separate To, CC, BCC)
+        to_emails = [e.strip() for e in self.to_input.text().split(',') if e.strip()]
+        cc_emails = [e.strip() for e in self.cc_input.text().split(',') if e.strip()] if self.cc_input.text() else []
+        bcc_emails = [e.strip() for e in self.bcc_input.text().split(',') if e.strip()] if self.bcc_input.text() else []
+        
+        # Get body content
+        body_html = self.body_editor.toHtml()
+        body_text = self.body_editor.toPlainText()
+        
+        # Get selected account
+        account = self._get_selected_account()
+        
+        return EmailMessage(
+            account_id=account.id if account else 0,
+            sender=account.email_address if account else "",
+            recipients=to_emails,
+            cc_recipients=cc_emails,
+            bcc_recipients=bcc_emails,
+            subject=self.subject_input.text(),
+            body_plain=body_text,
+            body_html=body_html,
+            sent_at=datetime.now(),
+            has_attachments=len(self.attachments) > 0,
+        )
+    
+    def _build_attachments(self) -> List[Attachment]:
+        """Build Attachment models from file paths."""
+        attachments = []
+        for file_path in self.attachments:
+            if file_path.exists():
+                attachments.append(Attachment(
+                    filename=file_path.name,
+                    local_path=str(file_path),
+                    size_bytes=file_path.stat().st_size,
+                    mime_type="application/octet-stream",  # Could be improved with mimetypes module
+                ))
+        return attachments
+    
     def on_send(self):
         """Handle send button click"""
+        # Validate recipients
         to_emails = [e.strip() for e in self.to_input.text().split(',') if e.strip()]
         
         if not to_emails:
@@ -250,34 +356,48 @@ class ComposeWindow(QDialog):
                 QMessageBox.warning(self, "Invalid Email", f"Invalid email address: {email}")
                 return
         
-        cc_emails = [e.strip() for e in self.cc_input.text().split(',') if e.strip()] if self.cc_input.text() else []
-        bcc_emails = [e.strip() for e in self.bcc_input.text().split(',') if e.strip()] if self.bcc_input.text() else []
+        # Get selected account
+        account = self._get_selected_account()
+        if not account:
+            QMessageBox.warning(self, "No Account", "Please select an account to send from.")
+            return
         
-        # Get body content
-        body_html = self.body_editor.toHtml()
-        body_text = self.body_editor.toPlainText()
+        if not self.message_sender:
+            QMessageBox.critical(self, "Error", "Message sender not configured.")
+            return
         
-        email_data = {
-            'to': to_emails,
-            'cc': cc_emails,
-            'bcc': bcc_emails,
-            'subject': self.subject_input.text(),
-            'body_html': body_html,
-            'body_text': body_text,
-            'attachments': self.attachments
-        }
+        # Build email message
+        message = self._build_email_message()
+        attachments = self._build_attachments()
         
-        # If sending from a draft, include draft ID to delete it after sending
-        if self.draft_email and self.draft_email.email_id:
-            email_data['draft_email_id'] = self.draft_email.email_id
-        
-        self.email_sent.emit(email_data)
-        self.accept()
+        # Send email using MessageSender
+        try:
+            self.send_btn.setEnabled(False)
+            self.send_btn.setText("Sending...")
+            
+            self.message_sender.send_message(account, message, attachments)
+            
+            # Success
+            QMessageBox.information(self, "Success", "Email sent successfully!")
+            self.accept()
+            
+        except SmtpError as e:
+            # Show error dialog
+            error_msg = str(e)
+            detailed_msg = f"Failed to send email:\n\n{error_msg}"
+            QMessageBox.critical(self, "Send Failed", detailed_msg)
+        except Exception as e:
+            # Unexpected error
+            QMessageBox.critical(self, "Error", f"An unexpected error occurred: {str(e)}")
+        finally:
+            self.send_btn.setEnabled(True)
+            self.send_btn.setText("Send")
     
     def on_save_draft(self):
         """Handle save draft button click"""
-        if not self.account_id:
-            QMessageBox.warning(self, "No Account", "No account selected for saving draft.")
+        account = self._get_selected_account()
+        if not account:
+            QMessageBox.warning(self, "No Account", "Please select an account for saving draft.")
             return
         
         # Get email data
@@ -289,21 +409,21 @@ class ComposeWindow(QDialog):
         body_text = self.body_editor.toPlainText()
         
         draft_data = {
-            'account_id': self.account_id,
+            'account_id': account.id,
             'to': to_emails,
             'cc': cc_emails,
             'bcc': bcc_emails,
             'subject': self.subject_input.text(),
             'body_html': body_html,
             'body_text': body_text,
-            'attachments': self.attachments
+            'attachments': [str(path) for path in self.attachments]
         }
         
         # If editing an existing draft, include its ID so it can be deleted
-        if self.draft_email and self.draft_email.email_id:
-            draft_data['draft_email_id'] = self.draft_email.email_id
+        if self.draft_email and self.draft_email.id:
+            draft_data['draft_email_id'] = self.draft_email.id
         
-        # Emit signal to save draft
+        # Emit signal to save draft (for backward compatibility with main_window)
         self.draft_saved.emit(draft_data)
         QMessageBox.information(self, "Draft Saved", "Draft saved successfully. You can find it in the Drafts folder.")
         self.accept()

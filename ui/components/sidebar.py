@@ -83,7 +83,7 @@ class Sidebar(QWidget):
         layout.setSpacing(12)
         
         # Compose button
-        compose_btn = QPushButton("✉ Compose")
+        compose_btn = QPushButton("Compose")
         compose_btn.setMinimumHeight(44)
         compose_btn.setStyleSheet("""
             QPushButton {

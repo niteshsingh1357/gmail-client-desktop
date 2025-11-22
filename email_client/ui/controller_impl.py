@@ -1,0 +1,126 @@
+"""
+Concrete controller implementations using the core layer.
+"""
+from typing import List, Optional
+from email_client.models import EmailAccount, Folder, EmailMessage
+from email_client.ui.controllers import (
+    AccountController, FolderController, MessageController, SyncController
+)
+from email_client.auth.accounts import (
+    list_accounts, get_default_account, set_default_account
+)
+from email_client.storage import cache_repo
+from email_client.core.search import search_emails
+from email_client.core.sync_manager import SyncManager
+from email_client.network.imap_client import ImapClient
+from email_client.auth.accounts import get_token_bundle
+
+
+class AccountControllerImpl(AccountController):
+    """Concrete account controller implementation."""
+    
+    def list_accounts(self) -> List[EmailAccount]:
+        """List all accounts."""
+        return list_accounts()
+    
+    def get_default_account(self) -> Optional[EmailAccount]:
+        """Get the default account."""
+        from email_client.auth.accounts import get_default_account as get_default
+        return get_default()
+    
+    def set_default_account(self, account_id: int) -> None:
+        """Set the default account."""
+        set_default_account(account_id)
+
+
+class FolderControllerImpl(FolderController):
+    """Concrete folder controller implementation."""
+    
+    def list_folders(self, account_id: int) -> List[Folder]:
+        """List all folders for an account."""
+        return cache_repo.list_folders(account_id)
+    
+    def get_folder(self, folder_id: int) -> Optional[Folder]:
+        """Get a folder by ID."""
+        folders = cache_repo.list_folders(0)  # Get all folders
+        for folder in folders:
+            if folder.id == folder_id:
+                return folder
+        return None
+
+
+class MessageControllerImpl(MessageController):
+    """Concrete message controller implementation."""
+    
+    def list_messages(self, folder_id: int, limit: int = 100, offset: int = 0) -> List[EmailMessage]:
+        """List messages in a folder."""
+        return cache_repo.list_emails(folder_id, limit=limit, offset=offset)
+    
+    def get_message(self, message_id: int) -> Optional[EmailMessage]:
+        """Get a message by ID with full body content."""
+        return cache_repo.get_email_by_id(message_id)
+    
+    def search_messages(
+        self,
+        account_id: Optional[int] = None,
+        query: str = "",
+        folder_id: Optional[int] = None,
+        read_state: Optional[str] = None,
+        limit: int = 50
+    ) -> List[EmailMessage]:
+        """Search messages."""
+        return search_emails(
+            account_id=account_id,
+            query=query,
+            folder_id=folder_id,
+            read_state=read_state,
+            limit=limit
+        )
+
+
+class SyncControllerImpl(SyncController):
+    """Concrete sync controller implementation."""
+    
+    def __init__(self):
+        self._sync_managers = {}  # Cache sync managers by account_id
+    
+    def _get_sync_manager(self, account: EmailAccount) -> SyncManager:
+        """Get or create a sync manager for an account."""
+        if account.id not in self._sync_managers:
+            # Get token bundle for the account
+            token_bundle = None
+            if account.id:
+                try:
+                    token_bundle = get_token_bundle(account.id)
+                except Exception:
+                    pass  # No token bundle available
+            
+            # Create IMAP client
+            imap_client = ImapClient(account, token_bundle)
+            
+            # Create sync manager
+            self._sync_managers[account.id] = SyncManager(account, imap_client)
+        
+        return self._sync_managers[account.id]
+    
+    def sync_folder(self, folder: Folder, limit: int = 100) -> int:
+        """Synchronize a folder with the server."""
+        # Get account
+        accounts = list_accounts()
+        account = None
+        for acc in accounts:
+            if acc.id == folder.account_id:
+                account = acc
+                break
+        
+        if not account:
+            raise ValueError(f"Account {folder.account_id} not found")
+        
+        sync_manager = self._get_sync_manager(account)
+        return sync_manager.sync_folder(folder, limit=limit)
+    
+    def initial_sync(self, account: EmailAccount, inbox_limit: int = 100) -> List[Folder]:
+        """Perform initial synchronization for an account."""
+        sync_manager = self._get_sync_manager(account)
+        return sync_manager.initial_sync(inbox_limit=inbox_limit)
+
