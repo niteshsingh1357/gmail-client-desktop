@@ -85,4 +85,9 @@ class SyncController(ABC):
     def initial_sync(self, account: EmailAccount, inbox_limit: int = 100) -> List[Folder]:
         """Perform initial synchronization for an account."""
         pass
+    
+    @abstractmethod
+    def fetch_email_body(self, account: EmailAccount, folder: Folder, message: EmailMessage) -> EmailMessage:
+        """Fetch email body from server if not cached."""
+        pass
 

@@ -250,8 +250,8 @@ class SyncManager:
         
         # Check if body is already cached
         cached_message = cache_repo.get_email_by_id(message.id)
-        if cached_message and cached_message.body_plain and cached_message.body_html:
-            # Body already cached
+        if cached_message and (cached_message.body_plain or cached_message.body_html):
+            # Body already cached (at least one format exists)
             return cached_message
         
         # Fetch body from server

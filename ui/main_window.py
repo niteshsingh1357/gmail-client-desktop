@@ -939,7 +939,8 @@ class MainWindow(QMainWindow):
                     account = acc
                     break
             if account:
-                self.sync_folder(account, folder)
+                # Sync with higher limit to ensure we get latest emails
+                self.sync_folder(account, folder, limit=500)
     
     def load_folder_emails(self, folder_id: int, page: int = 0):
         """Load emails for a folder with pagination"""
@@ -962,7 +963,7 @@ class MainWindow(QMainWindow):
         if self.current_folder_id:
             self.load_folder_emails(self.current_folder_id, page=page)
     
-    def sync_folder(self, account: EmailAccount, folder: Folder):
+    def sync_folder(self, account: EmailAccount, folder: Folder, limit: int = 500):
         """Sync emails for a folder using SyncController (runs in background)"""
         # Run sync in background to avoid blocking UI
         from PyQt5.QtCore import QThread, pyqtSignal
@@ -992,8 +993,8 @@ class MainWindow(QMainWindow):
         # Show status message
         self.status_bar.showMessage(f"Syncing {folder.name}...")
         
-        # Create and start sync thread
-        sync_thread = SyncThread(self.sync_controller, folder, limit=100)
+        # Create and start sync thread with specified limit (default 500 to get more emails)
+        sync_thread = SyncThread(self.sync_controller, folder, limit=limit)
         sync_thread.finished_signal.connect(
             lambda count: self._on_sync_complete(folder, count)
         )
@@ -1169,44 +1170,66 @@ class MainWindow(QMainWindow):
     def on_email_selected(self, email_id: int):
         """Handle email selection"""
         email = self.message_controller.get_message(email_id)
-        if email:
-            # Check if this is a draft email
-            folder = self.folder_controller.get_folder(email.folder_id)
-            if folder and 'draft' in folder.name.lower():
-                # Open draft in compose window for editing
-                accounts = self.account_controller.list_accounts()
-                account = None
-                for acc in accounts:
-                    if acc.id == email.account_id:
-                        account = acc
-                        break
-                account_email = account.email_address if account else None
-                # Get attachments for the draft
-                attachments = cache_repo.list_attachments(email_id)
-                compose_window = ComposeWindow(self, draft_email=email, account_id=email.account_id, account_email=account_email)
-                # Load attachments into compose window
-                if attachments:
-                    compose_window.load_attachments(attachments)
-                compose_window.email_sent.connect(self.handle_send_email)
-                compose_window.draft_saved.connect(self.handle_save_draft)
-                compose_window.exec_()
-                # Reload emails after closing compose window (in case draft was deleted/updated)
-                if self.current_folder_id:
-                    current_page = self.email_list.current_page
-                    self.load_folder_emails(self.current_folder_id, page=current_page)
-                return
-            
-            # Mark as read
-            if not email.is_read:
-                cache_repo.mark_email_read(email_id, True)
-                email.is_read = True
-            
-            # Get attachments
+        if not email:
+            return
+        
+        # Check if this is a draft email
+        folder = self.folder_controller.get_folder(email.folder_id)
+        if folder and 'draft' in folder.name.lower():
+            # Open draft in compose window for editing
+            accounts = self.account_controller.list_accounts()
+            account = None
+            for acc in accounts:
+                if acc.id == email.account_id:
+                    account = acc
+                    break
+            account_email = account.email_address if account else None
+            # Get attachments for the draft
             attachments = cache_repo.list_attachments(email_id)
-            
-            # Show in preview and switch to preview view
-            self.email_preview.show_email(email, attachments)
-            self.right_stack.setCurrentIndex(1)  # Switch to preview view
+            compose_window = ComposeWindow(self, draft_email=email, account_id=email.account_id, account_email=account_email)
+            # Load attachments into compose window
+            if attachments:
+                compose_window.load_attachments(attachments)
+            compose_window.email_sent.connect(self.handle_send_email)
+            compose_window.draft_saved.connect(self.handle_save_draft)
+            compose_window.exec_()
+            # Reload emails after closing compose window (in case draft was deleted/updated)
+            if self.current_folder_id:
+                current_page = self.email_list.current_page
+                self.load_folder_emails(self.current_folder_id, page=current_page)
+            return
+        
+        # Check if body content is missing and fetch it if needed
+        if not email.body_plain and not email.body_html:
+            # Body not cached, fetch it from server
+            if folder and email.uid_on_server:
+                try:
+                    # Get account for sync manager
+                    accounts = self.account_controller.list_accounts()
+                    account = None
+                    for acc in accounts:
+                        if acc.id == email.account_id:
+                            account = acc
+                            break
+                    
+                    if account:
+                        # Fetch body using sync controller
+                        email = self.sync_controller.fetch_email_body(account, folder, email)
+                except Exception as e:
+                    # If fetch fails, show email without body
+                    print(f"Failed to fetch email body: {e}")
+        
+        # Mark as read
+        if not email.is_read:
+            cache_repo.mark_email_read(email_id, True)
+            email.is_read = True
+        
+        # Get attachments
+        attachments = cache_repo.list_attachments(email_id)
+        
+        # Show in preview and switch to preview view
+        self.email_preview.show_email(email, attachments)
+        self.right_stack.setCurrentIndex(1)  # Switch to preview view
     
     def on_back_to_list(self):
         """Handle back button click - return to email list"""

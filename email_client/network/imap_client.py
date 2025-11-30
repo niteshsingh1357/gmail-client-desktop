@@ -384,10 +384,18 @@ class ImapClient:
             # Extract folder name (last part of path)
             name = server_path.split('/')[-1] if '/' in server_path else server_path
             
+            # Map Gmail folder names to display names
+            name = self._map_gmail_folder_name(server_path, name)
+            
             # Determine if it's a system folder
             path_upper = server_path.upper()
             is_system = (
                 path_upper == 'INBOX' or
+                path_upper.endswith('/INBOX') or
+                '[GMAIL]/ALL MAIL' in path_upper or
+                '[GMAIL]/SENT MAIL' in path_upper or
+                '[GMAIL]/DRAFTS' in path_upper or
+                '[GMAIL]/TRASH' in path_upper or
                 'SENT' in path_upper or
                 'DRAFT' in path_upper or
                 'TRASH' in path_upper or
@@ -403,6 +411,42 @@ class ImapClient:
             )
         except Exception:
             return None
+    
+    def _map_gmail_folder_name(self, server_path: str, name: str) -> str:
+        """
+        Map Gmail IMAP folder paths to user-friendly display names.
+        
+        Args:
+            server_path: The full IMAP folder path (e.g., "INBOX", "[Gmail]/All Mail").
+            name: The extracted folder name.
+            
+        Returns:
+            User-friendly display name.
+        """
+        path_upper = server_path.upper()
+        
+        # Map common Gmail folders
+        if path_upper == 'INBOX' or path_upper.endswith('/INBOX'):
+            return 'Inbox'
+        elif '[GMAIL]/ALL MAIL' in path_upper or 'ALL MAIL' in path_upper:
+            return 'All Mail'
+        elif '[GMAIL]/SENT MAIL' in path_upper or path_upper.endswith('/SENT') or path_upper.endswith('/SENT MAIL'):
+            return 'Sent'
+        elif '[GMAIL]/DRAFTS' in path_upper or path_upper.endswith('/DRAFTS'):
+            return 'Drafts'
+        elif '[GMAIL]/TRASH' in path_upper or path_upper.endswith('/TRASH'):
+            return 'Trash'
+        elif '[GMAIL]/SPAM' in path_upper or path_upper.endswith('/SPAM'):
+            return 'Spam'
+        elif '[GMAIL]/STARRED' in path_upper or path_upper.endswith('/STARRED'):
+            return 'Starred'
+        elif '[GMAIL]/IMPORTANT' in path_upper or path_upper.endswith('/IMPORTANT'):
+            return 'Important'
+        else:
+            # For custom labels/folders, remove [Gmail]/ prefix if present
+            if name.startswith('[Gmail]/'):
+                return name.replace('[Gmail]/', '')
+            return name
     
     def fetch_headers(
         self,
@@ -432,45 +476,75 @@ class ImapClient:
             if result != 'OK':
                 raise ImapOperationError(f"Failed to select folder '{folder.server_path}': {result}")
             
-            # Search for all messages
-            result, message_ids = self.connection.search(None, 'ALL')
-            if result != 'OK':
-                raise ImapOperationError(f"Failed to search folder '{folder.server_path}': {result}")
+            # Try to get latest emails using date-based search first
+            # Search for emails from the last 90 days (to ensure we get recent emails)
+            from datetime import timedelta
+            since_date = datetime.now() - timedelta(days=90)
+            date_str = since_date.strftime('%d-%b-%Y')
             
-            if not message_ids or not message_ids[0]:
-                return []
+            # Try searching for recent emails first
+            uid_list = []
+            try:
+                result, message_ids = self.connection.uid('search', None, f'SINCE {date_str}')
+                if result == 'OK' and message_ids and message_ids[0]:
+                    uid_list = message_ids[0].decode('utf-8').split()
+            except Exception:
+                # If date search fails, fall back to ALL
+                pass
             
-            # Parse message IDs
-            uid_list = message_ids[0].decode('utf-8').split()
+            # If date search returned too few results or failed, search ALL messages
+            if len(uid_list) < limit:
+                result, message_ids = self.connection.uid('search', None, 'ALL')
+                if result != 'OK':
+                    raise ImapOperationError(f"Failed to search folder '{folder.server_path}': {result}")
+                
+                if not message_ids or not message_ids[0]:
+                    return []
+                
+                # Parse message IDs
+                all_uids = message_ids[0].decode('utf-8').split()
+                if all_uids:
+                    # Combine recent UIDs with latest UIDs from all (take highest UIDs as they're usually newer)
+                    if uid_list:
+                        # Merge and deduplicate, prioritizing recent UIDs
+                        uid_set = set(uid_list)
+                        # Add the highest UIDs (last N from the full list) to ensure we cover latest
+                        sample_size = max(limit * 10, 500)
+                        latest_uids = all_uids[-sample_size:] if len(all_uids) > sample_size else all_uids
+                        uid_set.update(latest_uids)
+                        uid_list = list(uid_set)
+                    else:
+                        # Take highest UIDs (most recent)
+                        sample_size = max(limit * 10, 500)
+                        uid_list = all_uids[-sample_size:] if len(all_uids) > sample_size else all_uids
+            
             if not uid_list:
                 return []
             
-            # Fetch a large sample of recent UIDs to ensure we get the newest emails
-            # For large mailboxes, we need to fetch enough emails to find the truly newest ones
-            # after sorting by date, since UID order does not necessarily match chronological order
-            # Fetch up to 500-1000 emails, then sort by date and take the top N
-            sample_size = max(limit * 10, 500)  # At least 500 emails, or 10x the limit
-            sample_size = min(sample_size, len(uid_list))  # Don't exceed available emails
-            
-            # Take the most recent UIDs (highest UID numbers, which are usually newer)
-            uid_list = uid_list[-sample_size:] if len(uid_list) > sample_size else uid_list
-            
-            if not uid_list:
-                return []
+            # Convert to integers and sort to get highest UIDs first (usually newest)
+            # Then fetch a reasonable sample for date sorting
+            try:
+                uid_ints = sorted([int(uid) for uid in uid_list], reverse=True)
+                # Take top N UIDs (highest = newest typically)
+                sample_size = max(limit * 10, 500)
+                top_uids = uid_ints[:sample_size]
+                uid_list = [str(uid) for uid in top_uids]
+            except (ValueError, TypeError):
+                # If conversion fails, just use the list as-is
+                pass
             
             # Fetch headers and flags in batch (much faster than individual requests)
             # IMAP supports fetching multiple messages at once
             messages = self._fetch_message_headers_batch(uid_list, folder)
             
             # Sort by date descending (newest first)
-            # Use received_at if available, otherwise sent_at, otherwise fall back to UID
+            # Use received_at if available, otherwise sent_at
             def get_sort_key(msg: EmailMessage):
                 # Primary sort: received_at (or sent_at if received_at is None)
                 date_value = msg.received_at if msg.received_at else msg.sent_at
                 if date_value:
-                    # Return datetime object directly (Python can compare them)
                     return date_value
-                # Fallback to a very old date if no date (shouldn't happen normally)
+                # Fallback to a very old date if no date
                 return datetime.min
             
             messages.sort(key=get_sort_key, reverse=True)

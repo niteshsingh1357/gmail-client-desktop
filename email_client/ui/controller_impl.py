@@ -158,4 +158,9 @@ class SyncControllerImpl(SyncController):
             folder_limit=folder_limit,
             progress_callback=progress_callback
         )
+    
+    def fetch_email_body(self, account: EmailAccount, folder: Folder, message: EmailMessage) -> EmailMessage:
+        """Fetch email body from server if not cached."""
+        sync_manager = self._get_sync_manager(account)
+        return sync_manager.fetch_and_cache_body(folder, message)
 
