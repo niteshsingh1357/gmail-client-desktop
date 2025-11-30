@@ -333,6 +333,108 @@ def get_token_bundle(account_id: int) -> Optional[TokenBundle]:
         conn.close()
 
 
+def update_token_bundle(account_id: int, token_bundle: TokenBundle) -> None:
+    """
+    Update the token bundle for an OAuth account.
+    
+    Args:
+        account_id: The account ID.
+        token_bundle: The new TokenBundle to save.
+        
+    Raises:
+        AccountNotFoundError: If the account doesn't exist.
+        AccountError: If encryption or update fails.
+    """
+    conn = _get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Verify account exists
+        cursor.execute("SELECT id FROM accounts WHERE id = ?", (account_id,))
+        if not cursor.fetchone():
+            raise AccountNotFoundError(f"Account with ID {account_id} not found")
+        
+        # Encrypt and update token bundle
+        encrypted_data = _encrypt_token_bundle(token_bundle)
+        cursor.execute(
+            "UPDATE accounts SET encrypted_token_bundle = ? WHERE id = ?",
+            (encrypted_data, account_id)
+        )
+        conn.commit()
+    except AccountNotFoundError:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise AccountError(f"Failed to update token bundle: {str(e)}")
+    finally:
+        conn.close()
+
+
+def refresh_token_bundle(account_id: int) -> Optional[TokenBundle]:
+    """
+    Refresh an expired access token for an OAuth account.
+    
+    This function retrieves the current token bundle, checks if it's expired,
+    and if so, refreshes it using the refresh token. The new token bundle
+    is automatically saved back to the database.
+    
+    Args:
+        account_id: The account ID.
+        
+    Returns:
+        The refreshed TokenBundle if refresh was successful, None otherwise.
+        
+    Raises:
+        AccountNotFoundError: If the account doesn't exist.
+        AccountError: If refresh fails or account is not OAuth-based.
+        TokenRefreshError: If token refresh fails (e.g., invalid refresh token).
+    """
+    from email_client.auth.oauth import GoogleOAuthProvider, TokenRefreshError
+    
+    # Get current token bundle
+    token_bundle = get_token_bundle(account_id)
+    if not token_bundle:
+        return None
+    
+    # Check if token is expired or about to expire (within 5 minutes)
+    if token_bundle.expires_at:
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        time_until_expiry = (token_bundle.expires_at - now).total_seconds()
+        
+        # Only refresh if expired or expiring soon (within 5 minutes)
+        if time_until_expiry > 300:  # More than 5 minutes remaining
+            return token_bundle  # Token is still valid
+    
+    # Token is expired or expiring soon - refresh it
+    if not token_bundle.refresh_token:
+        raise AccountError("Cannot refresh token: no refresh token available. Please re-authenticate.")
+    
+    # Get account to determine provider
+    account = get_account(account_id)
+    if not account:
+        raise AccountNotFoundError(f"Account with ID {account_id} not found")
+    
+    provider_name = account.provider.lower()
+    
+    try:
+        if provider_name == 'gmail':
+            # Use GoogleOAuthProvider to refresh token
+            oauth_provider = GoogleOAuthProvider()
+            refreshed_bundle = oauth_provider.refresh_tokens(token_bundle.refresh_token)
+            
+            # Update token bundle in database
+            update_token_bundle(account_id, refreshed_bundle)
+            
+            return refreshed_bundle
+        else:
+            raise AccountError(f"Token refresh not supported for provider: {provider_name}")
+    except TokenRefreshError:
+        raise
+    except Exception as e:
+        raise AccountError(f"Failed to refresh token: {str(e)}")
+
+
 def get_password(account_id: int) -> Optional[str]:
     """
     Get the password for a password-based account.

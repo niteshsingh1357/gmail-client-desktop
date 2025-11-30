@@ -9,8 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional, List
 from email_client.config import OAUTH_REDIRECT_URI
-import config  # Root config module for Gmail credentials, OAUTH_REDIRECT_URI
-import config
+import config  # Root config module for Gmail credentials
 
 @dataclass(slots=True)
 class TokenBundle:
@@ -210,35 +209,46 @@ class GoogleOAuthProvider(OAuthProvider):
         Raises:
             TokenRefreshError: If the token refresh fails.
         """
-        # TODO: Implement actual HTTP call to Google's token endpoint
-        # This should make a POST request to self.TOKEN_ENDPOINT with:
-        # - client_id
-        # - client_secret
-        # - refresh_token
-        # - grant_type: "refresh_token"
-        #
-        # Example:
-        # response = requests.post(
-        #     self.TOKEN_ENDPOINT,
-        #     data={
-        #         "client_id": self.client_id,
-        #         "client_secret": self.client_secret,
-        #         "refresh_token": refresh_token,
-        #         "grant_type": "refresh_token",
-        #     }
-        # )
-        # response.raise_for_status()
-        # token_data = response.json()
-        #
-        # expires_at = datetime.now() + timedelta(seconds=token_data.get("expires_in", 3600))
-        # return TokenBundle(
-        #     access_token=token_data["access_token"],
-        #     refresh_token=token_data.get("refresh_token", refresh_token),  # May not be returned
-        #     expires_at=expires_at,
-        # )
+        if not refresh_token:
+            raise TokenRefreshError("Refresh token is required but not provided")
         
-        raise NotImplementedError(
-            "Token refresh not yet implemented. "
-            "TODO: Wire up HTTP call to Google's token endpoint."
-        )
+        try:
+            import requests
+            
+            response = requests.post(
+                self.TOKEN_ENDPOINT,
+                data={
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                    "refresh_token": refresh_token,
+                    "grant_type": "refresh_token",
+                },
+                timeout=10
+            )
+            
+            if response.status_code != 200:
+                error_data = response.json() if response.headers.get('content-type', '').startswith('application/json') else {}
+                error_msg = error_data.get('error_description') or error_data.get('error') or f"HTTP {response.status_code}"
+                raise TokenRefreshError(f"Token refresh failed: {error_msg}")
+            
+            token_data = response.json()
+            
+            # Calculate expiration time
+            expires_in = token_data.get("expires_in", 3600)
+            expires_at = datetime.now() + timedelta(seconds=expires_in)
+            
+            # Google may not return a new refresh_token - keep the old one if not provided
+            new_refresh_token = token_data.get("refresh_token") or refresh_token
+            
+            return TokenBundle(
+                access_token=token_data["access_token"],
+                refresh_token=new_refresh_token,
+                expires_at=expires_at,
+            )
+        except requests.RequestException as e:
+            raise TokenRefreshError(f"Network error during token refresh: {str(e)}")
+        except Exception as e:
+            if isinstance(e, TokenRefreshError):
+                raise
+            raise TokenRefreshError(f"Token refresh failed: {str(e)}")
 

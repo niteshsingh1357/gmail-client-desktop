@@ -65,6 +65,36 @@ class SmtpClient:
         self.connection: Optional[smtplib.SMTP] = None
         self._authenticated = False
     
+    def _refresh_token_if_needed(self) -> None:
+        """
+        Automatically refresh the access token if it's expired or about to expire.
+        
+        Raises:
+            SmtpAuthenticationError: If token refresh fails.
+        """
+        if not self.token_bundle or not self.account.id:
+            return
+        
+        # Check if token is expired or about to expire (within 5 minutes)
+        if self.token_bundle.expires_at:
+            from datetime import datetime
+            now = datetime.now()
+            time_until_expiry = (self.token_bundle.expires_at - now).total_seconds()
+            
+            # Only refresh if expired or expiring soon (within 5 minutes)
+            if time_until_expiry <= 300:  # 5 minutes or less remaining
+                try:
+                    from email_client.auth.accounts import refresh_token_bundle
+                    refreshed_bundle = refresh_token_bundle(self.account.id)
+                    if refreshed_bundle:
+                        self.token_bundle = refreshed_bundle
+                        return
+                except Exception as e:
+                    raise SmtpAuthenticationError(
+                        f"Failed to refresh expired access token: {str(e)}. "
+                        "Please remove and re-add your account to re-authenticate."
+                    )
+    
     def _build_xoauth2_string(self) -> str:
         """
         Build the XOAUTH2 authentication string for SMTP.
@@ -79,6 +109,9 @@ class SmtpClient:
         """
         if not self.token_bundle or not self.token_bundle.access_token:
             raise SmtpAuthenticationError("No access token available for XOAUTH2")
+        
+        # Automatically refresh token if expired or about to expire
+        self._refresh_token_if_needed()
         
         # Strip whitespace from email to prevent XOAUTH2 authentication failures
         email = self.account.email_address.strip()
