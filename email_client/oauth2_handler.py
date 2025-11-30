@@ -109,32 +109,14 @@ class OAuth2Handler:
                     warnings.showwarning = lambda *args, **kwargs: None
                     
                     try:
-                        # Try to fetch token - this might raise Warning as exception
                         flow.fetch_token(code=self._code)
-                        # If we get here, token exchange succeeded
                         credentials = flow.credentials
-                        print("Token exchange: fetch_token() completed successfully")
                     except Exception as e:
-                        # Catch ALL exceptions including Warning (which is a subclass of Exception)
-                        error_msg = str(e)
-                        error_type = type(e).__name__
-                        
-                        # Check if it's a scope-related warning/error
-                        if 'Scope has changed' in error_msg or 'scope' in error_msg.lower() or isinstance(e, Warning):
-                            print(f"Scope warning/exception caught (expected - can ignore): {error_type}: {error_msg[:150]}")
-                            # Even if exception was raised, credentials might still be set
-                            # oauthlib often sets credentials before raising scope warnings
-                            credentials = flow.credentials
-                            if credentials and credentials.token:
-                                print("Credentials were set despite scope warning - continuing...")
-                            else:
-                                print("WARNING: No credentials found after scope warning")
-                        else:
-                            # Real error - log it but still check for credentials
+                        # Catch exceptions including scope warnings
+                        # oauthlib may set credentials before raising warnings
+                        credentials = flow.credentials
+                        if not credentials or not credentials.token:
                             token_exchange_exception = e
-                            print(f"Exception during token exchange ({error_type}): {error_msg[:200]}")
-                            # Still try to get credentials in case they were set
-                            credentials = flow.credentials
                     finally:
                         warnings.showwarning = old_showwarning
                         
@@ -142,27 +124,24 @@ class OAuth2Handler:
                 if not credentials:
                     credentials = flow.credentials
                 
-                # Verify we have credentials - even if exception occurred
+                # Verify we have credentials
                 if not credentials:
                     error_msg = "No credentials object returned after token exchange"
                     if token_exchange_exception:
                         error_msg += f": {str(token_exchange_exception)}"
-                    print(f"ERROR: {error_msg}")
+                    self._error = error_msg
                     return None
                     
                 if not credentials.token:
-                    print("❌ Token exchange failed: No access token in credentials")
+                    self._error = "Token exchange failed: No access token in credentials"
                     return None
                 
-                # Log the scopes that were actually granted
+                # Check for required IMAP scope
                 granted_scopes = credentials.scopes if credentials.scopes else []
                 has_imap_scope = 'https://mail.google.com/' in granted_scopes
                 
                 if not has_imap_scope:
                     print("⚠️  WARNING: Token does NOT include https://mail.google.com/ scope! IMAP will fail.")
-                    print("⚠️  Please ensure the scope is added to Google Cloud Console OAuth consent screen.")
-                else:
-                    print(f"✅ Token granted with {len(granted_scopes)} scope(s) (IMAP scope included)")
                 
                 # Store token
                 self.token = {
@@ -185,30 +164,21 @@ class OAuth2Handler:
                     self.token['user_email'] = user_email
                     self.token['user_name'] = user_info.get('name', '').strip() if user_info.get('name') else ''
                     self.token['user_picture'] = user_info.get('picture', '')
-                    print(f"✅ User info fetched: {user_email}")
                 else:
-                    error_msg = "Failed to fetch user email from Google. Please ensure you granted all required permissions."
-                    print(f"❌ {error_msg}")
-                    self._error = error_msg
+                    self._error = "Failed to fetch user email from Google. Please ensure you granted all required permissions."
                     return None
                 
                 # Include expiry time if available
-                # Google access tokens always expire in 3600 seconds (1 hour)
                 if hasattr(credentials, 'expiry') and credentials.expiry:
                     from datetime import datetime, timezone
                     now_utc = datetime.now(timezone.utc)
-                    if credentials.expiry.tzinfo is None:
-                        expiry_utc = credentials.expiry.replace(tzinfo=timezone.utc)
-                    else:
-                        expiry_utc = credentials.expiry
-                    
+                    expiry_utc = credentials.expiry.replace(tzinfo=timezone.utc) if credentials.expiry.tzinfo is None else credentials.expiry
                     expires_in = int((expiry_utc - now_utc).total_seconds())
                     
-                    # Google tokens should be ~3600 seconds. Sanity check.
+                    # Validate expires_in (Google tokens are ~3600 seconds)
                     if expires_in > 0 and expires_in <= 7200:
                         self.token['expires_in'] = expires_in
                     else:
-                        print(f"⚠️  expires_in calculation looks wrong: {expires_in}s. Using default 3600.")
                         self.token['expires_in'] = 3600
                 else:
                     self.token['expires_in'] = 3600
@@ -216,28 +186,12 @@ class OAuth2Handler:
                 token_json = json.dumps(self.token)
                 return token_json
             except Exception as e:
-                import traceback
-                print(f"Token exchange failed: {e}")
-                traceback.print_exc()
-                return None
-                
-            except Exception as e:
-                import traceback
-                error_details = traceback.format_exc()
-                print(f"Gmail OAuth2 error: {e}")
-                print(f"Full traceback:\n{error_details}")
-                # Set error so it can be checked
                 if not hasattr(self, '_error') or not self._error:
                     self._error = f"OAuth error: {str(e)}"
                 return None
         finally:
             # Always stop the callback server
-            print("authenticate_gmail: Entering finally block to stop callback server")
-            import sys
-            sys.stdout.flush()
             self._stop_callback_server()
-            print("authenticate_gmail: Callback server stopped, exiting finally block")
-            sys.stdout.flush()
     
     def authenticate_outlook(self) -> Optional[str]:
         """Authenticate with Outlook using OAuth2"""

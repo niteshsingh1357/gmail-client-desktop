@@ -73,71 +73,25 @@ class ImapClient:
         if not self.token_bundle or not self.token_bundle.access_token:
             raise ImapAuthenticationError("No access token available for XOAUTH2")
         
-        # Check if token is expired and needs refresh
-        from datetime import datetime, timezone
-        now = datetime.now()
-        
+        # Check if token is expired
         if self.token_bundle.expires_at:
-            # Check if token is expired based on stored expiration
+            from datetime import datetime
+            now = datetime.now()
             time_until_expiry = (self.token_bundle.expires_at - now).total_seconds()
             
             if time_until_expiry <= 0:
-                print(f"❌ IMAP: Access token is EXPIRED! (expired {abs(time_until_expiry):.0f}s ago)")
                 raise ImapAuthenticationError(
                     "OAuth access token has expired. Please remove and re-add your account to get a new token."
                 )
-            elif time_until_expiry < 300:  # Less than 5 minutes remaining
-                print(f"⚠️  IMAP: Token expires soon ({time_until_expiry:.0f}s remaining)")
-        else:
-            print(f"⚠️  IMAP: Token has no expiration time stored!")
         
         # Strip whitespace from email to prevent XOAUTH2 authentication failures
-        # Hidden whitespace in email address causes "Invalid SASL argument" errors
         email = self.account.email_address.strip()
         
-        # Debug: Check for hidden whitespace and show exact email being used
-        print(f"[DEBUG] Raw user email repr: {repr(self.account.email_address)}")
-        print(f"[DEBUG] Using email in XOAUTH2: {repr(email)}")
-        print(f"[DEBUG] Email length: {len(email)} chars")
-        
-        # Verify email doesn't have any hidden characters
-        if email != self.account.email_address:
-            print(f"⚠️  WARNING: Email had whitespace! Original: {repr(self.account.email_address)}, Stripped: {repr(email)}")
-        
-        # Additional verification: check for any non-ASCII or control characters
-        if any(ord(c) < 32 or ord(c) > 126 for c in email if c not in '@.'):
-            print(f"⚠️  WARNING: Email contains non-printable characters!")
-            print(f"[DEBUG] Email bytes: {email.encode('utf-8')}")
-        
-        # Verify email format
-        if '@' not in email or '.' not in email.split('@')[-1]:
-            print(f"⚠️  WARNING: Email format looks invalid: {repr(email)}")
-        
-        # Build XOAUTH2 string - email MUST match exactly what token was issued for
-        # Format: user=email\x01auth=Bearer token\x01\x01
+        # Build XOAUTH2 string - Format: user=email\x01auth=Bearer token\x01\x01
         auth_string = f"user={email}\x01auth=Bearer {self.token_bundle.access_token}\x01\x01"
         
-        # Debug: Verify structure and separators
-        print(f"[DEBUG] XOAUTH2 auth_string length: {len(auth_string)} chars")
-        # Check for \x01 separator correctly (it's a byte, so check in bytes)
-        has_separator = b'\x01' in auth_string.encode('utf-8')
-        print(f"[DEBUG] XOAUTH2 contains \\x01 separators: {has_separator}")
-        print(f"[DEBUG] XOAUTH2 byte representation (first 100 bytes): {auth_string.encode('utf-8')[:100]}")
-        
-        # Show structure breakdown
-        parts = auth_string.split('\x01')
-        print(f"[DEBUG] XOAUTH2 structure: {len(parts)} parts after split by \\x01")
-        if len(parts) != 4:
-            print(f"⚠️  WARNING: Expected 4 parts (user=, auth=, \\x01, \\x01), got {len(parts)}!")
-        else:
-            print(f"[DEBUG] Part 1 (user): {parts[0]}")
-            print(f"[DEBUG] Part 2 (auth): {parts[1][:50]}..." if len(parts[1]) > 50 else f"[DEBUG] Part 2 (auth): {parts[1]}")
-        
         # Return raw bytes - imaplib will base64-encode it automatically
-        auth_bytes = auth_string.encode('utf-8')
-        print(f"[DEBUG] XOAUTH2 raw bytes length: {len(auth_bytes)} bytes (will be base64-encoded by imaplib)")
-        
-        return auth_bytes
+        return auth_string.encode('utf-8')
     
     def _build_xoauth2_string(self) -> str:
         """
@@ -151,9 +105,7 @@ class ImapClient:
         """
         # Get raw bytes and base64-encode them for SMTP usage
         auth_bytes = self._build_xoauth2_bytes()
-        encoded = base64.b64encode(auth_bytes).decode('utf-8')
-        print(f"[DEBUG] XOAUTH2 base64-encoded for SMTP: {len(encoded)} chars")
-        return encoded
+        return base64.b64encode(auth_bytes).decode('utf-8')
     
     def _connect(self) -> None:
         """Establish connection to IMAP server."""
@@ -177,152 +129,61 @@ class ImapClient:
                     )
                 
                 # Use XOAUTH2 authentication for OAuth accounts
-                print(f"🔐 Authenticating IMAP with XOAUTH2 for {self.account.email_address}...")
-                
-                # Pre-validate token with Google before attempting IMAP auth
-                try:
-                    import requests
-                    token_info = requests.get(
-                        'https://www.googleapis.com/oauth2/v1/tokeninfo',
-                        params={'access_token': self.token_bundle.access_token},
-                        timeout=5
-                    ).json()
-                    
-                    if 'error' in token_info:
-                        raise ImapAuthenticationError(
-                            f"Token validation failed: {token_info.get('error')}. "
-                            f"Please remove and re-add your account."
-                        )
-                    
-                    token_email = token_info.get('email', '').strip()
-                    token_scopes = token_info.get('scope', '').split() if token_info.get('scope') else []
-                    has_imap_scope = 'https://mail.google.com/' in token_scopes
-                    expires_in = token_info.get('expires_in', 0)
-                    
-                    account_email_stripped = self.account.email_address.strip()
-                    emails_match = token_email.lower() == account_email_stripped.lower()
-                    
-                    print(f"[DEBUG] Pre-auth token check:")
-                    print(f"  Token email: {repr(token_email)}")
-                    print(f"  Account email: {repr(account_email_stripped)}")
-                    print(f"  Emails match (case-insensitive): {emails_match}")
-                    if not emails_match:
-                        print(f"  ⚠️  WARNING: Email mismatch detected!")
-                        print(f"     Token email length: {len(token_email)}")
-                        print(f"     Account email length: {len(account_email_stripped)}")
-                        if token_email.lower() != account_email_stripped.lower():
-                            print(f"     Different emails: '{token_email}' vs '{account_email_stripped}'")
-                    print(f"  Has IMAP scope: {has_imap_scope}")
-                    print(f"  Expires in: {expires_in}s")
-                    
-                    # Use the token email in XOAUTH2 if there's a mismatch (token email is authoritative)
-                    if not emails_match:
-                        print(f"  ⚠️  Using token email ({token_email}) instead of account email for XOAUTH2")
-                        # We'll use the token email when building the XOAUTH2 string
-                    
-                    if not has_imap_scope:
-                        raise ImapAuthenticationError(
-                            "Token does not have https://mail.google.com/ scope. "
-                            "Please remove and re-add your account."
-                        )
-                    
-                    if expires_in <= 0:
-                        raise ImapAuthenticationError(
-                            f"Token is expired (expires_in: {expires_in}s). "
-                            "Please remove and re-add your account."
-                        )
-                except requests.RequestException as e:
-                    print(f"⚠️  Could not verify token with Google (network error): {e}")
-                    # Continue anyway - maybe it's a network issue
-                except Exception as e:
-                    if isinstance(e, ImapAuthenticationError):
-                        raise
-                    print(f"⚠️  Token validation warning: {e}")
-                
-                # Build the raw XOAUTH2 bytes (NOT base64-encoded)
-                # imaplib.authenticate() will automatically base64-encode the bytes we return
                 xoauth2_bytes = self._build_xoauth2_bytes()
                 
-                # For XOAUTH2, the responder should return RAW BYTES (not base64-encoded)
-                # imaplib will automatically base64-encode the bytes before sending to the server
-                # The lambda receives a challenge (bytes) and returns bytes (or None to abort)
+                # Build responder function that returns raw bytes (imaplib handles base64 encoding)
                 challenge_error_info = {'scope': None, 'status': None, 'schemes': None}
                 
                 def xoauth2_responder(challenge):
-                    # Handle challenge (if any)
+                    """Responder function for XOAUTH2 authentication."""
                     if challenge:
-                        # Challenge is always bytes according to imaplib documentation
                         try:
                             challenge_str = challenge.decode('utf-8')
-                            print(f"🔍 IMAP challenge received: {challenge_str}")
-                            
-                            # Try to parse as JSON (Google sends error responses as JSON)
+                            # Parse JSON error responses from Google
                             import json
                             try:
                                 challenge_data = json.loads(challenge_str)
                                 if isinstance(challenge_data, dict):
-                                    status = challenge_data.get('status')
-                                    scope = challenge_data.get('scope', '')
-                                    schemes = challenge_data.get('schemes', '')
+                                    challenge_error_info['status'] = challenge_data.get('status')
+                                    challenge_error_info['scope'] = challenge_data.get('scope', '')
+                                    challenge_error_info['schemes'] = challenge_data.get('schemes', '')
                                     
-                                    # Store error info for better error message later
-                                    challenge_error_info['status'] = status
-                                    challenge_error_info['scope'] = scope
-                                    challenge_error_info['schemes'] = schemes
-                                    
-                                    print(f"🔍 Challenge details: status={status}, scope={scope}, schemes={schemes}")
-                                    
-                                    if status == '400' or status == '401':
-                                        # Return None to abort authentication (imaplib will send '*')
+                                    # Abort on error responses
+                                    if challenge_data.get('status') in ('400', '401'):
                                         return None
                             except json.JSONDecodeError:
-                                # Not JSON, might be a normal challenge - continue and return XOAUTH2
                                 pass
-                        except Exception as e:
-                            print(f"⚠️  Error parsing challenge: {e}")
+                        except Exception:
                             pass
                     
-                    # Return the RAW BYTES (imaplib will base64-encode automatically)
                     return xoauth2_bytes
                 
                 try:
                     result, data = self.connection.authenticate('XOAUTH2', xoauth2_responder)
                     if result != 'OK':
                         error_msg = data[0].decode('utf-8') if data and data[0] else 'Unknown error'
-                        raise ImapAuthenticationError(
-                            f"XOAUTH2 authentication failed: {error_msg}"
-                        )
-                    print(f"✅ IMAP authentication successful")
+                        raise ImapAuthenticationError(f"XOAUTH2 authentication failed: {error_msg}")
                 except imaplib.IMAP4.error as imap_error:
                     error_msg = str(imap_error)
-                    print(f"IMAP: IMAP4 error during authentication: {error_msg}")
                     
-                    # Check if this is a scope-related error based on challenge response
+                    # Enhance error message with challenge details if available
                     enhanced_error = error_msg
                     if "Invalid SASL argument" in error_msg or "BAD" in error_msg:
                         scope = challenge_error_info.get('scope')
                         status = challenge_error_info.get('status')
-                        schemes = challenge_error_info.get('schemes')
                         
                         if scope:
-                            print(f"⚠️  Google IMAP challenge requested scope: {scope}")
-                            print(f"⚠️  Challenge status: {status}, schemes: {schemes}")
                             enhanced_error = (
                                 f"IMAP authentication failed.\n"
-                                f"Google IMAP server challenge: status={status}, scope={scope}, schemes={schemes}\n"
+                                f"Server requested scope: {scope}\n"
                                 f"Original error: {error_msg}\n\n"
-                                f"This usually means:\n"
-                                f"1. The token is expired (even if expiration looks correct)\n"
-                                f"2. The token doesn't have the required scope\n"
-                                f"3. The OAuth client isn't properly configured for IMAP\n\n"
-                                f"Please remove and re-add your account to get a fresh token."
+                                "Please remove and re-add your account to get a fresh token with the correct scopes."
                             )
                         else:
                             enhanced_error = (
                                 f"{error_msg}\n\n"
-                                "This error typically means the OAuth token is missing the required scope for IMAP access. "
-                                "For Gmail, the token must include 'https://mail.google.com/' scope. "
-                                "Please remove and re-add your account to get a new token with the correct scopes."
+                                "The OAuth token may be missing the required scope for IMAP access. "
+                                "Please remove and re-add your account."
                             )
                     
                     raise ImapAuthenticationError(f"IMAP authentication error: {enhanced_error}")

@@ -613,56 +613,35 @@ class MainWindow(QMainWindow):
     def _on_oauth_success(self, token_json: str, account_data: dict, login_window: LoginWindow,
                           db_manager, encryption_manager):
         """Handle successful OAuth authentication (called from main thread via signal)"""
-        print(f"_on_oauth_success called - token_json length: {len(token_json) if token_json else 0}")
-        print(f"Account data provider: {account_data.get('provider', 'unknown')}")
-        
         # Check if this was cancelled - if so, don't proceed
         if self.oauth_thread and self.oauth_thread.isInterruptionRequested():
-            print("OAuth was cancelled - skipping account setup")
-            # User cancelled - already handled in _on_oauth_cancelled
             if self.oauth_progress_dialog:
                 self.oauth_progress_dialog.close()
                 self.oauth_progress_dialog = None
             return
         
         try:
-            print("Closing progress dialog and login window...")
             # Close progress dialog first
             if self.oauth_progress_dialog:
                 self.oauth_progress_dialog.close()
                 self.oauth_progress_dialog = None
             
-            # Close login window IMMEDIATELY - before any other operations
-            # This provides immediate feedback to the user
+            # Close login window immediately for better UX
             if login_window:
-                # Since we're called via signal, we're already on the main thread
-                # Call accept() directly to close the modal dialog
-                login_window.accept()  # This exits exec_() and closes the dialog
-                
-                # Process events immediately to ensure the window closes
+                login_window.accept()
                 QApplication.processEvents()
-                
-                # Also hide it explicitly as a backup
                 login_window.hide()
                 login_window.setVisible(False)
-                
-            # Process events one more time to ensure UI updates
+            
             QApplication.processEvents()
             
             # Defer heavy operations using a timer so the dialog can close first
-            # This ensures the window closing happens immediately
-            print("Scheduling account setup to run in 100ms...")
             from PyQt5.QtCore import QTimer
             QTimer.singleShot(100, lambda: self._complete_account_setup_after_oauth(
                 token_json, account_data, db_manager, encryption_manager
             ))
-            print("Account setup scheduled successfully")
             
         except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            print(f"ERROR in _on_oauth_success: {e}")
-            print(f"Full traceback:\n{error_details}")
             QMessageBox.critical(self, "Error", f"Failed to add account: {str(e)}")
             if login_window:
                 login_window.progress_bar.setVisible(False)
@@ -715,38 +694,17 @@ class MainWindow(QMainWindow):
             
             token_data = json.loads(token_json)
             
-            # Check what scopes were granted (if stored)
-            if 'scopes' in token_data:
-                granted_scopes = token_data['scopes']
-                has_imap_scope = 'https://mail.google.com/' in granted_scopes if granted_scopes else False
-                if not has_imap_scope:
-                    print("⚠️  WARNING: Token does NOT include https://mail.google.com/ scope! IMAP authentication will likely fail.")
-            else:
-                print("⚠️  WARNING: Token scopes not stored in token_data")
-            
-            # OAuth2Handler returns token in format: {'token': ..., 'refresh_token': ..., ...}
-            # Extract token information (handle both formats)
+            # Extract token information
             access_token = token_data.get('token') or token_data.get('access_token', '')
             refresh_token = token_data.get('refresh_token')
             
             # Calculate expiration time
-            # Google access tokens always expire in 3600 seconds (1 hour)
-            # Use expires_in from token data if available, otherwise default to 3600
             expires_in = token_data.get('expires_in', 3600)
-            
-            # Ensure expires_in is a reasonable value (Google tokens are always ~3600 seconds)
-            if expires_in <= 0 or expires_in > 7200:  # More than 2 hours is suspicious
-                print(f"⚠️  WARNING: expires_in value looks wrong: {expires_in} seconds. Using default 3600.")
+            if expires_in <= 0 or expires_in > 7200:
                 expires_in = 3600
             
             # Calculate expires_at: current time + expires_in seconds
             expires_at = datetime.now() + timedelta(seconds=expires_in)
-            
-            # DEBUG: Verify token lifetime calculation
-            token_lifetime = (expires_at - datetime.now()).total_seconds()
-            print(f"📅 Token expires_in: {expires_in}s, lifetime: {token_lifetime:.1f}s")
-            if token_lifetime > 7200:
-                print(f"❌ ERROR: Token lifetime too large! Expected ~3600s, got {token_lifetime:.1f}s")
             
             # Validate access token before creating bundle
             if not access_token:
@@ -778,10 +736,8 @@ class MainWindow(QMainWindow):
                 profile_email.split('@')[0]
             )
             
-            # Create account using new system
+            # Create account
             provider_name = account_data['provider'].lower()
-            
-            print(f"📧 Creating account for {profile_email}...")
             account = create_oauth_account(
                 provider_name=provider_name,
                 token_bundle=token_bundle,
@@ -789,11 +745,10 @@ class MainWindow(QMainWindow):
                 display_name=display_name
             )
             
-            # Ensure we have a valid account ID
             if not account.id:
                 raise ValueError("Account was created but has no ID. This is a critical error.")
             
-            # Reload accounts to refresh UI (this will refresh the sidebar)
+            # Reload accounts to refresh UI
             self.load_accounts(select_account_id=account.id)
             
             # Select the newly added account and start sync
@@ -805,12 +760,8 @@ class MainWindow(QMainWindow):
             self.raise_()
             self.activateWindow()
             
-            print(f"✅ Account '{profile_email}' added successfully!")
             QMessageBox.information(self, "Success", f"Account '{profile_email}' added successfully!")
         except Exception as e:
-            import traceback
-            print(f"❌ Account setup error: {e}")
-            traceback.print_exc()
             QMessageBox.critical(self, "Error", f"Failed to complete account setup: {str(e)}")
         finally:
             # Clean up old database manager if it exists
