@@ -8,11 +8,12 @@ from email_client.ui.controllers import (
 )
 from email_client.auth.accounts import (
     list_accounts, get_default_account, set_default_account,
-    get_token_bundle, get_password
+    get_token_bundle, get_password, get_account
 )
 from email_client.storage import cache_repo
 from email_client.core.search import search_emails
 from email_client.core.sync_manager import SyncManager
+from email_client.core.folder_manager import FolderManager
 from email_client.network.imap_client import ImapClient
 
 
@@ -43,6 +44,106 @@ class FolderControllerImpl(FolderController):
     def get_folder(self, folder_id: int) -> Optional[Folder]:
         """Get a folder by ID."""
         return cache_repo.get_folder(folder_id)
+    
+    def create_folder(self, account_id: int, folder_name: str) -> Folder:
+        """Create a new folder."""
+        account = get_account(account_id)
+        if not account:
+            raise ValueError(f"Account {account_id} not found")
+        
+        # Get authentication
+        token_bundle = None
+        password = None
+        if account.auth_type == "oauth":
+            token_bundle = get_token_bundle(account_id)
+        elif account.auth_type == "password":
+            password = get_password(account_id)
+        
+        # Create IMAP client and folder manager
+        imap_client = ImapClient(account, token_bundle=token_bundle, password=password)
+        folder_manager = FolderManager(account, imap_client)
+        
+        # Create folder
+        return folder_manager.create_folder(folder_name)
+    
+    def rename_folder(self, folder_id: int, new_name: str) -> Folder:
+        """Rename a folder."""
+        folder = cache_repo.get_folder(folder_id)
+        if not folder:
+            raise ValueError(f"Folder {folder_id} not found")
+        
+        account = get_account(folder.account_id)
+        if not account:
+            raise ValueError(f"Account {folder.account_id} not found")
+        
+        # Get authentication
+        token_bundle = None
+        password = None
+        if account.auth_type == "oauth":
+            token_bundle = get_token_bundle(folder.account_id)
+        elif account.auth_type == "password":
+            password = get_password(folder.account_id)
+        
+        # Create IMAP client and folder manager
+        imap_client = ImapClient(account, token_bundle=token_bundle, password=password)
+        folder_manager = FolderManager(account, imap_client)
+        
+        # Rename folder
+        return folder_manager.rename_folder(folder, new_name)
+    
+    def delete_folder(self, folder_id: int) -> None:
+        """Delete a folder."""
+        folder = cache_repo.get_folder(folder_id)
+        if not folder:
+            raise ValueError(f"Folder {folder_id} not found")
+        
+        account = get_account(folder.account_id)
+        if not account:
+            raise ValueError(f"Account {folder.account_id} not found")
+        
+        # Get authentication
+        token_bundle = None
+        password = None
+        if account.auth_type == "oauth":
+            token_bundle = get_token_bundle(folder.account_id)
+        elif account.auth_type == "password":
+            password = get_password(folder.account_id)
+        
+        # Create IMAP client and folder manager
+        imap_client = ImapClient(account, token_bundle=token_bundle, password=password)
+        folder_manager = FolderManager(account, imap_client)
+        
+        # Delete folder
+        folder_manager.delete_folder(folder)
+    
+    def move_email(self, email_id: int, dest_folder_id: int) -> None:
+        """Move an email to a different folder."""
+        email = cache_repo.get_email_by_id(email_id)
+        if not email:
+            raise ValueError(f"Email {email_id} not found")
+        
+        dest_folder = cache_repo.get_folder(dest_folder_id)
+        if not dest_folder:
+            raise ValueError(f"Folder {dest_folder_id} not found")
+        
+        account = get_account(email.account_id)
+        if not account:
+            raise ValueError(f"Account {email.account_id} not found")
+        
+        # Get authentication
+        token_bundle = None
+        password = None
+        if account.auth_type == "oauth":
+            token_bundle = get_token_bundle(email.account_id)
+        elif account.auth_type == "password":
+            password = get_password(email.account_id)
+        
+        # Create IMAP client and folder manager
+        imap_client = ImapClient(account, token_bundle=token_bundle, password=password)
+        folder_manager = FolderManager(account, imap_client)
+        
+        # Move email
+        folder_manager.move_email(email, dest_folder)
 
 
 class MessageControllerImpl(MessageController):

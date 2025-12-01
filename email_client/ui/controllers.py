@@ -40,6 +40,26 @@ class FolderController(ABC):
     def get_folder(self, folder_id: int) -> Optional[Folder]:
         """Get a folder by ID."""
         pass
+    
+    @abstractmethod
+    def create_folder(self, account_id: int, folder_name: str) -> Folder:
+        """Create a new folder."""
+        pass
+    
+    @abstractmethod
+    def rename_folder(self, folder_id: int, new_name: str) -> Folder:
+        """Rename a folder."""
+        pass
+    
+    @abstractmethod
+    def delete_folder(self, folder_id: int) -> None:
+        """Delete a folder."""
+        pass
+    
+    @abstractmethod
+    def move_email(self, email_id: int, dest_folder_id: int) -> None:
+        """Move an email to a different folder."""
+        pass
 
 
 class MessageController(ABC):

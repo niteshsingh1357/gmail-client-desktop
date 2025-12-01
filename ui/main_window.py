@@ -159,6 +159,9 @@ class MainWindow(QMainWindow):
         self.sidebar.account_delete_requested.connect(self.on_delete_account_requested)
         self.sidebar.compose_clicked.connect(self.on_compose_clicked)
         self.sidebar.add_account_clicked.connect(self.on_add_account_clicked)
+        self.sidebar.folder_create_requested.connect(self.on_create_folder_requested)
+        self.sidebar.folder_rename_requested.connect(self.on_rename_folder_requested)
+        self.sidebar.folder_delete_requested.connect(self.on_delete_folder_requested)
         splitter.addWidget(self.sidebar)
         
         # Right side container
@@ -263,6 +266,7 @@ class MainWindow(QMainWindow):
         self.email_preview.reply_clicked.connect(self.on_reply_clicked)
         self.email_preview.forward_clicked.connect(self.on_forward_clicked)
         self.email_preview.delete_clicked.connect(self.on_delete_clicked)
+        self.email_preview.move_email_requested.connect(self.on_move_email_requested)
         self.email_preview.back_clicked.connect(self.on_back_to_list)
         self.right_stack.addWidget(self.email_preview)  # Index 1
         
@@ -1652,6 +1656,113 @@ class MainWindow(QMainWindow):
     def show_about(self):
         """Show about dialog"""
         QMessageBox.about(self, "About", "Email Desktop Client\n\nA cross-platform email client built with Python and PyQt5.")
+    
+    def on_create_folder_requested(self, account_id: int):
+        """Handle create folder request"""
+        from ui.components.folder_dialog import CreateFolderDialog
+        
+        dialog = CreateFolderDialog(self)
+        if dialog.exec_() == QDialog.Accepted:
+            folder_name = dialog.get_folder_name()
+            if folder_name:
+                try:
+                    folder = self.folder_controller.create_folder(account_id, folder_name)
+                    # Reload folders for the account
+                    folders = self.folder_controller.list_folders(account_id)
+                    self.sidebar.set_folders(folders)
+                    self.status_bar.showMessage(f"Folder '{folder_name}' created successfully")
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Failed to create folder: {str(e)}")
+    
+    def on_rename_folder_requested(self, folder_id: int):
+        """Handle rename folder request"""
+        from ui.components.folder_dialog import RenameFolderDialog
+        
+        folder = self.folder_controller.get_folder(folder_id)
+        if not folder:
+            QMessageBox.warning(self, "Error", "Folder not found.")
+            return
+        
+        dialog = RenameFolderDialog(folder.name, self)
+        if dialog.exec_() == QDialog.Accepted:
+            new_name = dialog.get_new_name()
+            if new_name and new_name != folder.name:
+                try:
+                    updated_folder = self.folder_controller.rename_folder(folder_id, new_name)
+                    # Reload folders for the account
+                    folders = self.folder_controller.list_folders(folder.account_id)
+                    self.sidebar.set_folders(folders)
+                    # If this was the current folder, update selection
+                    if self.current_folder_id == folder_id:
+                        self.sidebar.select_folder(updated_folder.id)
+                    self.status_bar.showMessage(f"Folder renamed to '{new_name}' successfully")
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Failed to rename folder: {str(e)}")
+    
+    def on_delete_folder_requested(self, folder_id: int):
+        """Handle delete folder request"""
+        folder = self.folder_controller.get_folder(folder_id)
+        if not folder:
+            QMessageBox.warning(self, "Error", "Folder not found.")
+            return
+        
+        reply = QMessageBox.question(
+            self,
+            "Delete Folder",
+            f"Are you sure you want to delete the folder '{folder.name}'?\n\n"
+            "All emails in this folder will be deleted from the server.\n"
+            "This action cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            try:
+                self.folder_controller.delete_folder(folder_id)
+                # Reload folders for the account
+                folders = self.folder_controller.list_folders(folder.account_id)
+                self.sidebar.set_folders(folders)
+                # If this was the current folder, clear selection
+                if self.current_folder_id == folder_id:
+                    self.current_folder_id = None
+                    self.email_list.set_emails([], total_count=0, current_page=0, folder_id=None)
+                self.status_bar.showMessage(f"Folder '{folder.name}' deleted successfully")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to delete folder: {str(e)}")
+    
+    def on_move_email_requested(self, email_id: int):
+        """Handle move email request"""
+        from ui.components.folder_dialog import MoveEmailDialog
+        
+        email = self.message_controller.get_message(email_id)
+        if not email:
+            QMessageBox.warning(self, "Error", "Email not found.")
+            return
+        
+        # Get all folders for the account
+        folders = self.folder_controller.list_folders(email.account_id)
+        if not folders:
+            QMessageBox.warning(self, "Error", "No folders available.")
+            return
+        
+        dialog = MoveEmailDialog(folders, current_folder_id=email.folder_id, parent=self)
+        if dialog.exec_() == QDialog.Accepted:
+            dest_folder_id = dialog.get_selected_folder_id()
+            if dest_folder_id:
+                try:
+                    self.folder_controller.move_email(email_id, dest_folder_id)
+                    # Reload current folder to reflect the move
+                    if self.current_folder_id:
+                        current_page = self.email_list.current_page
+                        self.load_folder_emails(self.current_folder_id, page=current_page)
+                    # Go back to list view
+                    self.on_back_to_list()
+                    self.email_preview.show_empty_state()
+                    dest_folder = self.folder_controller.get_folder(dest_folder_id)
+                    if dest_folder:
+                        self.status_bar.showMessage(f"Email moved to '{dest_folder.name}' successfully")
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Failed to move email: {str(e)}")
     
     def closeEvent(self, event):
         """Handle window close event - graceful shutdown"""

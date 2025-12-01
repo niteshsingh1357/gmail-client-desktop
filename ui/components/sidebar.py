@@ -16,6 +16,9 @@ class Sidebar(QWidget):
     account_delete_requested = pyqtSignal(int)  # account_id
     compose_clicked = pyqtSignal()
     add_account_clicked = pyqtSignal()
+    folder_create_requested = pyqtSignal(int)  # account_id
+    folder_rename_requested = pyqtSignal(int)  # folder_id
+    folder_delete_requested = pyqtSignal(int)  # folder_id
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -145,6 +148,8 @@ class Sidebar(QWidget):
             }
         """)
         self.folder_list.itemClicked.connect(self.on_folder_clicked)
+        self.folder_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.folder_list.customContextMenuRequested.connect(self.on_folder_context_menu)
         layout.addWidget(self.folder_list)
         
         # Accounts section
@@ -337,4 +342,53 @@ class Sidebar(QWidget):
                 if account_id in self.accounts:
                     del self.accounts[account_id]
                 break
+    
+    def on_folder_context_menu(self, position):
+        """Show context menu for folder"""
+        item = self.folder_list.itemAt(position)
+        if item:
+            folder_id = item.data(Qt.UserRole)
+            if folder_id:
+                folder = self.folders.get(folder_id)
+                if not folder:
+                    return
+                
+                menu = QMenu(self)
+                menu.setStyleSheet("""
+                    QMenu {
+                        background-color: #252526;
+                        color: #cccccc;
+                        border: 1px solid #3e3e42;
+                        border-radius: 4px;
+                        padding: 4px;
+                    }
+                    QMenu::item {
+                        padding: 8px 24px;
+                        border-radius: 4px;
+                    }
+                    QMenu::item:selected {
+                        background-color: #094771;
+                    }
+                    QMenu::separator {
+                        height: 1px;
+                        background-color: #3e3e42;
+                        margin: 4px 8px;
+                    }
+                """)
+                
+                # Only show management options for non-system folders
+                if not folder.is_system_folder:
+                    rename_action = menu.addAction("✏️ Rename Folder")
+                    rename_action.triggered.connect(lambda: self.folder_rename_requested.emit(folder_id))
+                    
+                    delete_action = menu.addAction("🗑 Delete Folder")
+                    delete_action.triggered.connect(lambda: self.folder_delete_requested.emit(folder_id))
+                    
+                    menu.addSeparator()
+                
+                # Create new folder (always available)
+                create_action = menu.addAction("➕ Create Folder")
+                create_action.triggered.connect(lambda: self.folder_create_requested.emit(folder.account_id))
+                
+                menu.exec_(self.folder_list.mapToGlobal(position))
 

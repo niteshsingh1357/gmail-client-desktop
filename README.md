@@ -24,6 +24,8 @@ A modern, cross-platform desktop email client built with Python and PyQt5. Manag
 - **Search & Filter**: Quickly find emails by subject, sender, content, or date
 - **Pagination**: Efficient email browsing with 50 emails per page
 - **Read/Unread Management**: Mark emails as read/unread, sync status with server
+- **Folder Management**: Create, rename, and delete custom folders; move emails between folders
+- **Server-Side Operations**: All operations (read, delete, move) sync with IMAP server
 - **Secure Storage**: All credentials and tokens encrypted locally using AES-256
 - **Automatic Token Refresh**: OAuth tokens are automatically refreshed when expired
 
@@ -341,6 +343,20 @@ The database includes indexes for optimal query performance:
    Refresh UI
    ```
 
+6. **Move Email**:
+   ```
+   User moves email → Send IMAP COPY to destination folder → 
+   Mark as \Deleted in source folder → Send IMAP EXPUNGE → 
+   Delete old record from cache → Update email with new folder_id → 
+   Refresh UI
+   ```
+
+7. **Folder Operations**:
+   ```
+   User creates/renames/deletes folder → Send IMAP CREATE/RENAME/DELETE → 
+   Update folder cache → Refresh sidebar
+   ```
+
 ### Authentication Flow
 
 1. **OAuth Flow** (Gmail/Outlook):
@@ -471,6 +487,16 @@ gmail-client-desktop/
 - **Switch Accounts**: Use the account filter dropdown in the top bar
 - **Delete Account**: Right-click account in sidebar or use File → Remove Account
 - **View All Accounts**: Select "All Accounts" in the filter dropdown
+
+### Managing Folders
+
+- **Create Folder**: Right-click any folder in the sidebar → "Create Folder" → Enter folder name
+- **Rename Folder**: Right-click a custom folder (not system folders like Inbox/Sent) → "Rename Folder" → Enter new name
+- **Delete Folder**: Right-click a custom folder → "Delete Folder" → Confirm deletion
+  - **Note**: System folders (Inbox, Sent, Drafts, Trash) cannot be renamed or deleted
+- **Move Email**: Open an email → Click "Move" button → Select destination folder
+  - Emails are moved on the server and removed from the source folder
+  - All folder operations are synchronized with the IMAP server
 
 ## Troubleshooting
 

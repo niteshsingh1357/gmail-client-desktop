@@ -61,11 +61,14 @@ class FolderManager:
         """
         Create a new folder on the server and in cache.
         
+        Folder names must be unique within an account, but can be the same
+        across different accounts.
+        
         Args:
             name: The name of the folder to create.
             
         Returns:
-            The created Folder object.
+            The created Folder object (or existing folder if it already exists).
             
         Raises:
             FolderCreationError: If folder creation fails.
@@ -80,19 +83,48 @@ class FolderManager:
         # In a hierarchical system, this might be "INBOX/Subfolder"
         server_path = clean_name
         
+        # Check if folder already exists for this account in cache
+        # Folders are unique per account (account_id, server_path)
+        account_id = self.account.id or 0
+        existing_folders = cache_repo.list_folders(account_id)
+        for existing_folder in existing_folders:
+            if existing_folder.server_path == server_path or existing_folder.name == clean_name:
+                # Folder already exists for this account, return it
+                return existing_folder
+        
         try:
             # Create folder on server first (transactional: if this fails, don't update cache)
-            with self.imap_client:
-                result, data = self.imap_client.connection.create(server_path)
-                if result != 'OK':
-                    error_msg = data[0].decode('utf-8') if data and data[0] else 'Unknown error'
+            self.imap_client._ensure_connected()
+            result, data = self.imap_client.connection.create(server_path)
+            if result != 'OK':
+                error_msg = data[0].decode('utf-8') if data and data[0] else 'Unknown error'
+                
+                # Check if error is due to folder already existing
+                if 'ALREADYEXISTS' in error_msg or 'already exists' in error_msg.lower():
+                    # Folder exists on server but not in cache - try to sync it
+                    # First, try to list folders from server to get the existing one
+                    try:
+                        server_folders = self.imap_client.list_folders()
+                        for server_folder in server_folders:
+                            if server_folder.server_path == server_path or server_folder.name == clean_name:
+                                # Found it on server, add to cache
+                                server_folder.account_id = account_id
+                                return cache_repo.upsert_folder(server_folder)
+                    except Exception:
+                        pass
+                    
+                    # If we can't sync it, return a helpful error
                     raise FolderCreationError(
-                        f"Failed to create folder '{name}' on server: {error_msg}"
+                        f"Folder '{name}' already exists for this account"
                     )
+                
+                raise FolderCreationError(
+                    f"Failed to create folder '{name}' on server: {error_msg}"
+                )
             
             # If server operation succeeded, update cache
             folder = Folder(
-                account_id=self.account.id or 0,
+                account_id=account_id,
                 name=clean_name,
                 server_path=server_path,
                 is_system_folder=False,
@@ -136,16 +168,16 @@ class FolderManager:
         
         try:
             # Rename folder on server first (transactional: if this fails, don't update cache)
-            with self.imap_client:
-                result, data = self.imap_client.connection.rename(
-                    folder.server_path,
-                    new_server_path
+            self.imap_client._ensure_connected()
+            result, data = self.imap_client.connection.rename(
+                folder.server_path,
+                new_server_path
+            )
+            if result != 'OK':
+                error_msg = data[0].decode('utf-8') if data and data[0] else 'Unknown error'
+                raise FolderRenameError(
+                    f"Failed to rename folder '{folder.name}' to '{new_name}' on server: {error_msg}"
                 )
-                if result != 'OK':
-                    error_msg = data[0].decode('utf-8') if data and data[0] else 'Unknown error'
-                    raise FolderRenameError(
-                        f"Failed to rename folder '{folder.name}' to '{new_name}' on server: {error_msg}"
-                    )
             
             # If server operation succeeded, update cache
             folder.name = clean_new_name
@@ -178,13 +210,13 @@ class FolderManager:
         
         try:
             # Delete folder on server first (transactional: if this fails, don't update cache)
-            with self.imap_client:
-                result, data = self.imap_client.connection.delete(folder.server_path)
-                if result != 'OK':
-                    error_msg = data[0].decode('utf-8') if data and data[0] else 'Unknown error'
-                    raise FolderDeletionError(
-                        f"Failed to delete folder '{folder.name}' on server: {error_msg}"
-                    )
+            self.imap_client._ensure_connected()
+            result, data = self.imap_client.connection.delete(folder.server_path)
+            if result != 'OK':
+                error_msg = data[0].decode('utf-8') if data and data[0] else 'Unknown error'
+                raise FolderDeletionError(
+                    f"Failed to delete folder '{folder.name}' on server: {error_msg}"
+                )
             
             # If server operation succeeded, delete from cache
             cache_repo.delete_folder(folder.id)
@@ -240,16 +272,32 @@ class FolderManager:
         
         try:
             # Move email on server first (transactional: if this fails, don't update cache)
-            with self.imap_client:
-                self.imap_client.move_message(
-                    source_folder,
-                    dest_folder,
-                    str(email.uid_on_server)
-                )
+            self.imap_client._ensure_connected()
+            old_uid = email.uid_on_server
+            old_folder_id = email.folder_id
+            
+            self.imap_client.move_message(
+                source_folder,
+                dest_folder,
+                str(email.uid_on_server)
+            )
             
             # If server operation succeeded, update cache
-            # Update email's folder_id
+            # First, delete the old record from source folder (by unique key)
+            from email_client.storage import db
+            db.execute(
+                """
+                DELETE FROM emails 
+                WHERE account_id = ? AND folder_id = ? AND uid_on_server = ?
+                """,
+                (email.account_id, old_folder_id, old_uid)
+            )
+            
+            # The UID in the destination folder may be different after COPY
+            # Set it to 0 temporarily - it will be updated on next sync with the correct UID
+            # This prevents duplicate entries and ensures the sync manager can find and update it
             email.folder_id = dest_folder.id
+            email.uid_on_server = 0  # Placeholder - will be updated on next sync
             cache_repo.upsert_email_header(email)
             
             # Note: The email body and attachments remain associated with the email

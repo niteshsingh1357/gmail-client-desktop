@@ -50,6 +50,7 @@ class EmailPreview(QWidget):
     delete_clicked = pyqtSignal(int)  # email_id
     attachment_clicked = pyqtSignal(str)  # file_path
     back_clicked = pyqtSignal()  # back button clicked
+    move_email_requested = pyqtSignal(int)  # email_id
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -272,6 +273,27 @@ class EmailPreview(QWidget):
         self.delete_btn.clicked.connect(self.on_delete)
         button_layout.addWidget(self.delete_btn)
         
+        self.move_btn = QPushButton("Move")
+        self.move_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3c3c3c;
+                color: #cccccc;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                padding: 6px 14px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #464647;
+                border-color: #666666;
+            }
+            QPushButton:pressed {
+                background-color: #2d2d30;
+            }
+        """)
+        self.move_btn.clicked.connect(self.on_move)
+        button_layout.addWidget(self.move_btn)
+        
         button_layout.addStretch()
         layout.addLayout(button_layout)
         
@@ -336,6 +358,7 @@ class EmailPreview(QWidget):
         self.reply_btn.setVisible(True)
         self.forward_btn.setVisible(True)
         self.delete_btn.setVisible(True)
+        self.move_btn.setVisible(True)
         self.back_btn.setVisible(True)
         self.details_btn.setVisible(True)
         
@@ -488,6 +511,7 @@ class EmailPreview(QWidget):
         self.reply_btn.setVisible(False)
         self.forward_btn.setVisible(False)
         self.delete_btn.setVisible(False)
+        self.move_btn.setVisible(False)
         self.attachments_label.setVisible(False)
         self.attachments_widget.setVisible(False)
         self.back_btn.setVisible(False)
@@ -513,3 +537,8 @@ class EmailPreview(QWidget):
         """Handle delete button click"""
         if self.current_email:
             self.delete_clicked.emit(self.current_email.id)
+    
+    def on_move(self):
+        """Handle move button click"""
+        if self.current_email:
+            self.move_email_requested.emit(self.current_email.id)
