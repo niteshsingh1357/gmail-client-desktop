@@ -193,9 +193,20 @@ class ComposeWindow(QDialog):
         """Setup draft email fields"""
         if self.draft_email:
             # Load draft content into compose window
-            # Parse recipients (could be in "To" or "recipients" field)
-            recipients = self.draft_email.recipients or ""
-            self.to_input.setText(recipients)
+            # Parse recipients (recipients is a list, need to join)
+            recipients_list = self.draft_email.recipients or []
+            recipients_str = ", ".join(recipients_list) if recipients_list else ""
+            self.to_input.setText(recipients_str)
+            
+            # Set CC recipients if available
+            cc_list = getattr(self.draft_email, 'cc_recipients', []) or []
+            cc_str = ", ".join(cc_list) if cc_list else ""
+            self.cc_input.setText(cc_str)
+            
+            # Set BCC recipients if available
+            bcc_list = getattr(self.draft_email, 'bcc_recipients', []) or []
+            bcc_str = ", ".join(bcc_list) if bcc_list else ""
+            self.bcc_input.setText(bcc_str)
             
             # Set subject
             subject = self.draft_email.subject or ""
@@ -206,8 +217,8 @@ class ComposeWindow(QDialog):
             # Set body content (prefer HTML if available)
             if self.draft_email.body_html:
                 self.body_editor.setHtml(self.draft_email.body_html)
-            elif self.draft_email.body_text:
-                self.body_editor.setPlainText(self.draft_email.body_text)
+            elif self.draft_email.body_plain:
+                self.body_editor.setPlainText(self.draft_email.body_plain)
     
     def load_attachments(self, attachments: list[Attachment]):
         """Load attachments from a draft email"""
