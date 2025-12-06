@@ -258,6 +258,8 @@ class MainWindow(QMainWindow):
         self.email_list.email_selected.connect(self.on_email_selected)
         self.email_list.refresh_requested.connect(self.on_refresh_clicked)
         self.email_list.page_changed.connect(self.on_email_page_changed)
+        self.email_list.bulk_delete_requested.connect(self.on_bulk_delete_requested)
+        self.email_list.bulk_move_requested.connect(self.on_bulk_move_requested)
         self.right_stack.addWidget(self.email_list)  # Index 0
         self.current_folder_id = None  # Track current folder for pagination
         
@@ -1763,6 +1765,129 @@ class MainWindow(QMainWindow):
                         self.status_bar.showMessage(f"Email moved to '{dest_folder.name}' successfully")
                 except Exception as e:
                     QMessageBox.critical(self, "Error", f"Failed to move email: {str(e)}")
+    
+    def on_bulk_delete_requested(self, email_ids: list):
+        """Handle bulk delete request"""
+        if not email_ids:
+            return
+        
+        count = len(email_ids)
+        reply = QMessageBox.question(
+            self, 
+            "Delete Emails", 
+            f"Are you sure you want to delete {count} email{'s' if count > 1 else ''}?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            success_count = 0
+            failed_count = 0
+            
+            for email_id in email_ids:
+                try:
+                    # Get email and folder information
+                    email = self.message_controller.get_message(email_id)
+                    if not email:
+                        failed_count += 1
+                        continue
+                    
+                    folder = self.folder_controller.get_folder(email.folder_id)
+                    if not folder:
+                        failed_count += 1
+                        continue
+                    
+                    # Get account
+                    accounts = self.account_controller.list_accounts()
+                    account = None
+                    for acc in accounts:
+                        if acc.id == email.account_id:
+                            account = acc
+                            break
+                    
+                    if account:
+                        # Delete from server
+                        try:
+                            self.sync_controller.delete_message(account, folder, email)
+                        except Exception as e:
+                            print(f"Failed to delete email {email_id} from server: {e}")
+                    
+                    # Delete from cache
+                    try:
+                        from email_client.storage import db
+                        db.execute("DELETE FROM emails WHERE id = ?", (email_id,))
+                        success_count += 1
+                    except Exception:
+                        failed_count += 1
+                        
+                except Exception as e:
+                    print(f"Error deleting email {email_id}: {e}")
+                    failed_count += 1
+            
+            # Reload folder
+            if self.current_folder_id:
+                current_page = self.email_list.current_page
+                self.load_folder_emails(self.current_folder_id, page=current_page)
+            
+            # Clear selection and refresh
+            self.email_list.selected_email_ids.clear()
+            self.email_list.update_table()
+            self.email_list.update_bulk_actions_visibility()
+            
+            # Show status message
+            if failed_count == 0:
+                self.status_bar.showMessage(f"Successfully deleted {success_count} email{'s' if success_count > 1 else ''}")
+            else:
+                self.status_bar.showMessage(f"Deleted {success_count} email{'s' if success_count > 1 else ''}, {failed_count} failed")
+    
+    def on_bulk_move_requested(self, email_ids: list):
+        """Handle bulk move request"""
+        if not email_ids:
+            return
+        
+        # Get first email to determine account and current folder
+        first_email = self.message_controller.get_message(email_ids[0])
+        if not first_email:
+            QMessageBox.warning(self, "Error", "Email not found.")
+            return
+        
+        # Get all folders for the account
+        folders = self.folder_controller.list_folders(first_email.account_id)
+        if not folders:
+            QMessageBox.warning(self, "Error", "No folders available.")
+            return
+        
+        from ui.components.folder_dialog import MoveEmailDialog
+        dialog = MoveEmailDialog(folders, current_folder_id=first_email.folder_id, parent=self)
+        if dialog.exec_() == QDialog.Accepted:
+            dest_folder_id = dialog.get_selected_folder_id()
+            if dest_folder_id:
+                success_count = 0
+                failed_count = 0
+                
+                for email_id in email_ids:
+                    try:
+                        self.folder_controller.move_email(email_id, dest_folder_id)
+                        success_count += 1
+                    except Exception as e:
+                        print(f"Failed to move email {email_id}: {e}")
+                        failed_count += 1
+                
+                # Reload current folder to reflect the moves
+                if self.current_folder_id:
+                    current_page = self.email_list.current_page
+                    self.load_folder_emails(self.current_folder_id, page=current_page)
+                
+                # Clear selection
+                self.email_list.selected_email_ids.clear()
+                self.email_list.update_table()
+                
+                # Show status message
+                dest_folder = self.folder_controller.get_folder(dest_folder_id)
+                if dest_folder:
+                    if failed_count == 0:
+                        self.status_bar.showMessage(f"Successfully moved {success_count} email{'s' if success_count > 1 else ''} to '{dest_folder.name}'")
+                    else:
+                        self.status_bar.showMessage(f"Moved {success_count} email{'s' if success_count > 1 else ''} to '{dest_folder.name}', {failed_count} failed")
     
     def closeEvent(self, event):
         """Handle window close event - graceful shutdown"""

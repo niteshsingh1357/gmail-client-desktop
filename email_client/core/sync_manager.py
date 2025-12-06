@@ -177,10 +177,23 @@ class SyncManager:
         
         # Create sets of UIDs for comparison
         remote_uids: Set[int] = {msg.uid_on_server for msg in remote_messages}
-        cached_uids: Set[int] = {msg.uid_on_server for msg in cached_messages}
+        cached_uids: Set[int] = {msg.uid_on_server for msg in cached_messages if msg.uid_on_server > 0}
         
         # Create a map of cached messages by UID
-        cached_by_uid = {msg.uid_on_server: msg for msg in cached_messages}
+        cached_by_uid = {msg.uid_on_server: msg for msg in cached_messages if msg.uid_on_server > 0}
+        
+        # Create a map of cached messages with uid_on_server = 0 (moved emails waiting for sync)
+        # Match by subject, sender, and sent_at for moved emails
+        cached_by_content = {}
+        for msg in cached_messages:
+            if msg.uid_on_server == 0:
+                # Use a combination of subject, sender, and sent_at as key
+                content_key = (
+                    msg.subject or '',
+                    msg.sender or '',
+                    msg.sent_at.isoformat() if msg.sent_at else ''
+                )
+                cached_by_content[content_key] = msg
         
         # Upsert remote messages (insert new, update existing)
         # Batch process: prepare all messages first, then upsert in a single transaction
@@ -192,7 +205,7 @@ class SyncManager:
             remote_msg.account_id = self.account.id or 0
             remote_msg.folder_id = folder_id
             
-            # Check if message exists in cache
+            # Check if message exists in cache by UID
             if remote_msg.uid_on_server in cached_by_uid:
                 # Update existing message, preserving local read/flag state
                 cached_msg = cached_by_uid[remote_msg.uid_on_server]
@@ -208,6 +221,26 @@ class SyncManager:
                 # Merge flags so we don't lose any local-only flags
                 if cached_msg.flags:
                     remote_msg.flags = remote_msg.flags.union(cached_msg.flags)
+            else:
+                # Check if this is a moved email (uid_on_server = 0) by matching content
+                content_key = (
+                    remote_msg.subject or '',
+                    remote_msg.sender or '',
+                    remote_msg.sent_at.isoformat() if remote_msg.sent_at else ''
+                )
+                if content_key in cached_by_content:
+                    # Found a moved email that matches by content
+                    cached_msg = cached_by_content[content_key]
+                    remote_msg.id = cached_msg.id
+                    
+                    # Preserve local read/flag state
+                    if cached_msg.is_read and not remote_msg.is_read:
+                        remote_msg.is_read = True
+                        if '\\Seen' not in remote_msg.flags:
+                            remote_msg.flags.add('\\Seen')
+                    
+                    if cached_msg.flags:
+                        remote_msg.flags = remote_msg.flags.union(cached_msg.flags)
             
             messages_to_upsert.append(remote_msg)
         

@@ -1007,7 +1007,7 @@ class ImapClient:
         """
         Delete a message from the server.
         
-        This marks the message with the \Deleted flag and expunges it.
+        This marks the message with the \\Deleted flag and expunges it.
         For Gmail and most providers, this moves the message to Trash.
         
         Args:
@@ -1039,4 +1039,86 @@ class ImapClient:
             raise
         except Exception as e:
             raise ImapOperationError(f"Error deleting message: {str(e)}")
+    
+    def create_folder(self, folder_path: str) -> None:
+        """
+        Create a folder on the IMAP server.
+        
+        Args:
+            folder_path: The folder path/name to create (e.g., "test", "My Folder").
+            
+        Raises:
+            ImapOperationError: If the operation fails.
+        """
+        self._ensure_connected()
+        
+        try:
+            # imaplib's create() method should handle string quoting automatically
+            # However, we need to ensure the folder name is properly encoded
+            # For IMAP, folder names should be passed as strings and imaplib will handle quoting
+            result, data = self.connection.create(folder_path)
+            if result != 'OK':
+                error_msg = data[0].decode('utf-8', errors='ignore') if data and data[0] else 'Unknown error'
+                raise ImapOperationError(f"CREATE command error: {error_msg}")
+        except imaplib.IMAP4.error as imap_error:
+            # Convert imaplib error to our custom exception
+            error_msg = str(imap_error)
+            raise ImapOperationError(f"CREATE command error: {error_msg}")
+        except ImapOperationError:
+            raise
+        except Exception as e:
+            if isinstance(e, ImapOperationError):
+                raise
+            raise ImapOperationError(f"Error creating folder: {str(e)}")
+    
+    def rename_folder(self, old_path: str, new_path: str) -> None:
+        """
+        Rename a folder on the IMAP server.
+        
+        Args:
+            old_path: The current folder path/name.
+            new_path: The new folder path/name.
+            
+        Raises:
+            ImapOperationError: If the operation fails.
+        """
+        self._ensure_connected()
+        
+        try:
+            # Let imaplib handle quoting internally
+            result, data = self.connection.rename(old_path, new_path)
+            if result != 'OK':
+                error_msg = data[0].decode('utf-8') if data and data[0] else 'Unknown error'
+                raise ImapOperationError(f"RENAME command error: {error_msg}")
+        except ImapOperationError:
+            raise
+        except Exception as e:
+            if isinstance(e, ImapOperationError):
+                raise
+            raise ImapOperationError(f"Error renaming folder: {str(e)}")
+    
+    def delete_folder(self, folder_path: str) -> None:
+        """
+        Delete a folder from the IMAP server.
+        
+        Args:
+            folder_path: The folder path/name to delete.
+            
+        Raises:
+            ImapOperationError: If the operation fails.
+        """
+        self._ensure_connected()
+        
+        try:
+            # Let imaplib handle quoting internally
+            result, data = self.connection.delete(folder_path)
+            if result != 'OK':
+                error_msg = data[0].decode('utf-8') if data and data[0] else 'Unknown error'
+                raise ImapOperationError(f"DELETE command error: {error_msg}")
+        except ImapOperationError:
+            raise
+        except Exception as e:
+            if isinstance(e, ImapOperationError):
+                raise
+            raise ImapOperationError(f"Error deleting folder: {str(e)}")
 

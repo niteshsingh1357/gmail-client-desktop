@@ -138,7 +138,41 @@ def upsert_email_header(email: EmailMessage) -> EmailMessage:
     # Serialize flags set to JSON
     flags_json = json.dumps(list(email.flags)) if email.flags else "[]"
     
-    # Check if email exists
+    # If email.id is set, update by ID (this handles moved emails with new UIDs)
+    if email.id:
+        existing = db.fetchone(
+            "SELECT id FROM emails WHERE id = ?",
+            (email.id,)
+        )
+        if existing:
+            # Update existing email header by ID (including updating uid_on_server)
+            db.execute(
+                """
+                UPDATE emails 
+                SET account_id = ?, folder_id = ?, uid_on_server = ?,
+                    sender = ?, recipients = ?, subject = ?, preview_text = ?,
+                    sent_at = ?, received_at = ?, is_read = ?, has_attachments = ?, flags = ?
+                WHERE id = ?
+                """,
+                (
+                    email.account_id,
+                    email.folder_id,
+                    email.uid_on_server,
+                    email.sender,
+                    recipients_json,
+                    email.subject,
+                    email.preview_text,
+                    email.sent_at.isoformat() if email.sent_at else None,
+                    email.received_at.isoformat() if email.received_at else None,
+                    1 if email.is_read else 0,
+                    1 if email.has_attachments else 0,
+                    flags_json,
+                    email.id
+                )
+            )
+            return email
+    
+    # Check if email exists by unique key (account_id, folder_id, uid_on_server)
     existing = db.fetchone(
         """
         SELECT id FROM emails 

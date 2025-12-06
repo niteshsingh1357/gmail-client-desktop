@@ -94,10 +94,11 @@ class FolderManager:
         
         try:
             # Create folder on server first (transactional: if this fails, don't update cache)
-            self.imap_client._ensure_connected()
-            result, data = self.imap_client.connection.create(server_path)
-            if result != 'OK':
-                error_msg = data[0].decode('utf-8') if data and data[0] else 'Unknown error'
+            # Use the ImapClient's create_folder method which handles encoding properly
+            try:
+                self.imap_client.create_folder(server_path)
+            except ImapOperationError as imap_error:
+                error_msg = str(imap_error)
                 
                 # Check if error is due to folder already existing
                 if 'ALREADYEXISTS' in error_msg or 'already exists' in error_msg.lower():

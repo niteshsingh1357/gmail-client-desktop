@@ -108,7 +108,12 @@ class Sidebar(QWidget):
         compose_btn.clicked.connect(self.compose_clicked.emit)
         layout.addWidget(compose_btn)
         
-        # Folders section
+        # Folders section header with Plus button
+        folders_header = QWidget()
+        folders_header_layout = QHBoxLayout()
+        folders_header_layout.setContentsMargins(0, 0, 0, 0)
+        folders_header_layout.setSpacing(8)
+        
         folders_label = QLabel("Folders")
         folders_label.setStyleSheet("""
             QLabel {
@@ -120,7 +125,38 @@ class Sidebar(QWidget):
                 padding: 8px 4px 4px 4px;
             }
         """)
-        layout.addWidget(folders_label)
+        
+        # Plus button to create new folder
+        create_folder_btn = QPushButton("+")
+        create_folder_btn.setToolTip("Create new folder")
+        create_folder_btn.setFixedSize(24, 24)
+        create_folder_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #858585;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                font-size: 16px;
+                font-weight: 600;
+                padding: 2px;
+            }
+            QPushButton:hover {
+                background-color: #3c3c3c;
+                color: #cccccc;
+                border-color: #666666;
+            }
+            QPushButton:pressed {
+                background-color: #2d2d30;
+                border-color: #555555;
+            }
+        """)
+        create_folder_btn.clicked.connect(self.on_create_folder_clicked)
+        
+        folders_header_layout.addWidget(folders_label)
+        folders_header_layout.addStretch()
+        folders_header_layout.addWidget(create_folder_btn)
+        folders_header.setLayout(folders_header_layout)
+        layout.addWidget(folders_header)
         
         self.folder_list = QListWidget()
         self.folder_list.setStyleSheet("""
@@ -342,6 +378,16 @@ class Sidebar(QWidget):
                 if account_id in self.accounts:
                     del self.accounts[account_id]
                 break
+    
+    def on_create_folder_clicked(self):
+        """Handle create folder button click"""
+        if self.current_account_id:
+            self.folder_create_requested.emit(self.current_account_id)
+        else:
+            # If no account is selected, try to use the first account
+            if self.accounts:
+                first_account_id = list(self.accounts.keys())[0]
+                self.folder_create_requested.emit(first_account_id)
     
     def on_folder_context_menu(self, position):
         """Show context menu for folder"""
